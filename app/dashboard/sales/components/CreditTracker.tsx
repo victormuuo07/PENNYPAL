@@ -27,33 +27,35 @@ export default function CreditTracker({ sales }: { sales: CreditSale[] }) {
           KES {totalOwed.toLocaleString()} outstanding
         </span>
       </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-cream-deep text-ink-soft text-left">
-            <th className="px-3 py-2 font-medium">Customer</th>
-            <th className="px-3 py-2 font-medium">Phone</th>
-            <th className="px-3 py-2 font-medium text-right">Balance</th>
-            <th className="px-3 py-2 font-medium">Due</th>
-          </tr>
-        </thead>
-        <tbody>
-          {outstanding.map((s) => {
-            const overdue = s.due_date && s.due_date < today;
-            return (
-              <tr key={s.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2">{s.Name}</td>
-                <td className="px-3 py-2 text-ink-soft">{s.Phone ?? "—"}</td>
-                <td className="px-3 py-2 text-right font-medium text-orange-700">
-                  KES {s.balance.toLocaleString()}
-                </td>
-                <td className={`px-3 py-2 ${overdue ? "text-red-bright font-medium" : "text-ink-soft"}`}>
-                  {s.due_date ?? "—"} {overdue && "⚠️ Overdue"}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-cream-deep text-ink-soft text-left">
+              <th className="px-3 py-2 font-medium">Customer</th>
+              <th className="px-3 py-2 font-medium">Phone</th>
+              <th className="px-3 py-2 font-medium text-right">Balance</th>
+              <th className="px-3 py-2 font-medium">Due</th>
+            </tr>
+          </thead>
+          <tbody>
+            {outstanding.map((s) => {
+              const overdue = s.due_date && s.due_date < today;
+              return (
+                <tr key={s.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2">{s.Name}</td>
+                  <td className="px-3 py-2 text-ink-soft">{s.Phone ?? "—"}</td>
+                  <td className="px-3 py-2 text-right font-medium text-orange-700">
+                    KES {s.balance.toLocaleString()}
+                  </td>
+                  <td className={`px-3 py-2 ${overdue ? "text-red-bright font-medium" : "text-ink-soft"}`}>
+                    {s.due_date ?? "—"} {overdue && "⚠️ Overdue"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       <p className="text-xs text-ink-soft mt-3">
         Once Customer Messaging is connected to a contact for these customers, overdue balances here can
         trigger a reminder SMS automatically — that wiring isn&apos;t built yet.

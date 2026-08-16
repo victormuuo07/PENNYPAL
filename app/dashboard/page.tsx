@@ -4,6 +4,7 @@ import SpendingChart from "@/components/SpendingChart";
 import BusinessHealthPanel from "@/components/BusinessHealthPanel";
 import TopPerformers from "@/components/TopPerformers";
 import RecentActivity from "@/components/RecentActivity";
+import TradeHistorySinceLaunch from "@/components/TradeHistorySinceLaunch";
 
 export default async function DashboardPage() {
   const supabase = createClient();
@@ -52,7 +53,9 @@ export default async function DashboardPage() {
     monthly[key] ??= { month: key, sales: 0, expenses: 0 };
     monthly[key].expenses += e.amount ?? 0;
   }
-  const chartData = Object.values(monthly).sort((a, b) => a.month.localeCompare(b.month)).slice(-6);
+  const allMonths = Object.values(monthly).sort((a, b) => a.month.localeCompare(b.month));
+  const chartData = allMonths.slice(-6);
+  const totalSalesSinceLaunch = (sales ?? []).reduce((s, x) => s + (x.Total ?? 0), 0);
 
   // Business Health, Top Performers, and Recent Activity all pull
   // company-wide data — owner-only, so only fetched (and only allowed by
@@ -154,7 +157,7 @@ export default async function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <SummaryCard label="This Month's Balance" value={balanceThisMonth} tone="balance" previousValue={balanceLastMonth} />
         <SummaryCard label="This Month's Sales" value={salesThisMonth} tone="positive" previousValue={salesLastMonth} />
         <SummaryCard label="This Month's Expenses" value={expensesThisMonth} tone="negative" previousValue={expensesLastMonth} invertTrend />
@@ -165,6 +168,7 @@ export default async function DashboardPage() {
           format="percent"
           previousValue={profitMarginLastMonth}
         />
+        <SummaryCard label="Total Sales Since Launch" value={totalSalesSinceLaunch} tone="positive" />
       </div>
 
       {isOwner && (
@@ -183,6 +187,8 @@ export default async function DashboardPage() {
         <h2 className="text-lg font-medium text-ink mb-4">Sales vs Expenses (last 6 months + next month est.)</h2>
         <SpendingChart data={chartData} />
       </div>
+
+      {isOwner && <TradeHistorySinceLaunch monthly={allMonths} />}
 
       {isOwner && <RecentActivity activities={activities} />}
     </div>

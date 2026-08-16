@@ -157,38 +157,40 @@ export default function ContactsPanel({ contacts }: { contacts: Contact[] }) {
       )}
 
       {contacts.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-cream-deep text-ink-soft text-left">
-              <th className="px-3 py-2 font-medium">Name</th>
-              <th className="px-3 py-2 font-medium">Phone</th>
-              <th className="px-3 py-2 font-medium">Type</th>
-              <th className="px-3 py-2 font-medium">Location</th>
-              <th className="px-3 py-2 font-medium">Last Contact</th>
-              <th className="px-3 py-2 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {contacts.map((c) => (
-              <tr key={c.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2">{c.customer_name}</td>
-                <td className="px-3 py-2 text-ink-soft">{c.phone_number}</td>
-                <td className="px-3 py-2 text-ink-soft">{c.customer_type}</td>
-                <td className="px-3 py-2 text-ink-soft">{c.location}</td>
-                <td className="px-3 py-2 text-ink-soft">{c.last_contact_date ?? "—"}</td>
-                <td className="px-3 py-2">
-                  <button
-                    onClick={() => sendTestMessage(c)}
-                    disabled={sendingId === c.id}
-                    className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-3 py-1 disabled:opacity-60"
-                  >
-                    {sendingId === c.id ? "Sending…" : "📱 Send test"}
-                  </button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-cream-deep text-ink-soft text-left">
+                <th className="px-3 py-2 font-medium">Name</th>
+                <th className="px-3 py-2 font-medium">Phone</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium">Location</th>
+                <th className="px-3 py-2 font-medium">Last Contact</th>
+                <th className="px-3 py-2 font-medium"></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {contacts.map((c) => (
+                <tr key={c.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2">{c.customer_name}</td>
+                  <td className="px-3 py-2 text-ink-soft">{c.phone_number}</td>
+                  <td className="px-3 py-2 text-ink-soft">{c.customer_type}</td>
+                  <td className="px-3 py-2 text-ink-soft">{c.location}</td>
+                  <td className="px-3 py-2 text-ink-soft">{c.last_contact_date ?? "—"}</td>
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => sendTestMessage(c)}
+                      disabled={sendingId === c.id}
+                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-3 py-1 disabled:opacity-60"
+                    >
+                      {sendingId === c.id ? "Sending…" : "📱 Send test"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

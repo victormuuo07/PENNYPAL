@@ -131,28 +131,30 @@ export default function AssetsPanel({ assets }: { assets: Asset[] }) {
       )}
 
       {assets.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-cream-deep text-ink-soft text-left">
-              <th className="px-3 py-2 font-medium">Asset</th>
-              <th className="px-3 py-2 font-medium">Type</th>
-              <th className="px-3 py-2 font-medium">Purchased</th>
-              <th className="px-3 py-2 font-medium text-right">Cost</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assets.map((a) => (
-              <tr key={a.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2">{a.asset_name}</td>
-                <td className="px-3 py-2 text-ink-soft">{a.asset_type}</td>
-                <td className="px-3 py-2 text-ink-soft">{a.purchase_date}</td>
-                <td className="px-3 py-2 text-right">KES {a.purchase_cost?.toLocaleString()}</td>
-                <td className="px-3 py-2 text-ink-soft">{a.status}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-cream-deep text-ink-soft text-left">
+                <th className="px-3 py-2 font-medium">Asset</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium">Purchased</th>
+                <th className="px-3 py-2 font-medium text-right">Cost</th>
+                <th className="px-3 py-2 font-medium">Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {assets.map((a) => (
+                <tr key={a.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2">{a.asset_name}</td>
+                  <td className="px-3 py-2 text-ink-soft">{a.asset_type}</td>
+                  <td className="px-3 py-2 text-ink-soft">{a.purchase_date}</td>
+                  <td className="px-3 py-2 text-right">KES {a.purchase_cost?.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-ink-soft">{a.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

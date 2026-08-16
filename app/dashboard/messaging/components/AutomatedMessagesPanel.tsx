@@ -121,35 +121,37 @@ export default function AutomatedMessagesPanel({ messages }: { messages: Automat
       )}
 
       {messages.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-cream-deep text-ink-soft text-left">
-              <th className="px-3 py-2 font-medium">Rule</th>
-              <th className="px-3 py-2 font-medium">Target</th>
-              <th className="px-3 py-2 font-medium">Schedule</th>
-              <th className="px-3 py-2 font-medium">Active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {messages.map((m) => (
-              <tr key={m.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2">{m.message_name}</td>
-                <td className="px-3 py-2 text-ink-soft">{m.customer_type}</td>
-                <td className="px-3 py-2 text-ink-soft">{m.schedule_type}</td>
-                <td className="px-3 py-2">
-                  <button
-                    onClick={() => toggleActive(m.id, m.is_active)}
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      m.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-600"
-                    }`}
-                  >
-                    {m.is_active ? "Active" : "Paused"}
-                  </button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-cream-deep text-ink-soft text-left">
+                <th className="px-3 py-2 font-medium">Rule</th>
+                <th className="px-3 py-2 font-medium">Target</th>
+                <th className="px-3 py-2 font-medium">Schedule</th>
+                <th className="px-3 py-2 font-medium">Active</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {messages.map((m) => (
+                <tr key={m.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2">{m.message_name}</td>
+                  <td className="px-3 py-2 text-ink-soft">{m.customer_type}</td>
+                  <td className="px-3 py-2 text-ink-soft">{m.schedule_type}</td>
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => toggleActive(m.id, m.is_active)}
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        m.is_active ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-600"
+                      }`}
+                    >
+                      {m.is_active ? "Active" : "Paused"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

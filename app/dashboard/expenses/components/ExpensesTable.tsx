@@ -19,30 +19,32 @@ export default function ExpensesTable({ expenses }: { expenses: Expense[] }) {
 
   return (
     <div className="bg-white rounded-card-lg shadow-soft overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-cream-deep text-ink-soft text-left">
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium">Category</th>
-            <th className="px-4 py-3 font-medium">Description</th>
-            <th className="px-4 py-3 font-medium">Method</th>
-            <th className="px-4 py-3 font-medium text-right">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {expenses.map((e) => (
-            <tr key={e.id} className="border-t border-cream-deep">
-              <td className="px-4 py-3 text-ink-soft">{e.date}</td>
-              <td className="px-4 py-3">{e.category}</td>
-              <td className="px-4 py-3 text-ink-soft">{e.description}</td>
-              <td className="px-4 py-3 text-ink-soft">{e.payment_method}</td>
-              <td className="px-4 py-3 text-right font-medium text-red-bright">
-                KES {e.amount?.toLocaleString()}
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-cream-deep text-ink-soft text-left">
+              <th className="px-4 py-3 font-medium">Date</th>
+              <th className="px-4 py-3 font-medium">Category</th>
+              <th className="px-4 py-3 font-medium">Description</th>
+              <th className="px-4 py-3 font-medium">Method</th>
+              <th className="px-4 py-3 font-medium text-right">Amount</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {expenses.map((e) => (
+              <tr key={e.id} className="border-t border-cream-deep">
+                <td className="px-4 py-3 text-ink-soft">{e.date}</td>
+                <td className="px-4 py-3">{e.category}</td>
+                <td className="px-4 py-3 text-ink-soft">{e.description}</td>
+                <td className="px-4 py-3 text-ink-soft">{e.payment_method}</td>
+                <td className="px-4 py-3 text-right font-medium text-red-bright">
+                  KES {e.amount?.toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
