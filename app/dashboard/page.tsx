@@ -1,10 +1,22 @@
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetchAll";
 import SummaryCard from "@/components/SummaryCard";
 import SpendingChart from "@/components/SpendingChart";
 import BusinessHealthPanel from "@/components/BusinessHealthPanel";
 import TopPerformers from "@/components/TopPerformers";
 import RecentActivity from "@/components/RecentActivity";
 import TradeHistorySinceLaunch from "@/components/TradeHistorySinceLaunch";
+
+type SaleRow = {
+  Total: number;
+  Date: string;
+  Customer_Type: string | null;
+  Payment_Status: string;
+  amount_paid: number | null;
+  Product: string;
+  sales_person_id: string | null;
+  SALES_PEOPLE: { full_name: string }[] | null;
+};
 
 export default async function DashboardPage() {
   const supabase = createClient();
@@ -16,10 +28,13 @@ export default async function DashboardPage() {
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user!.id).single();
   const isOwner = profile?.role === "owner";
 
-  const [{ data: sales }, { data: expenses }] = await Promise.all([
-    supabase
-      .from("SALES")
-      .select("Total, Date, Customer_Type, Payment_Status, amount_paid, Product, sales_person_id, SALES_PEOPLE(full_name)"),
+  const [sales, { data: expenses }] = await Promise.all([
+    fetchAllRows<SaleRow>(
+      supabase,
+      "SALES",
+      "Total, Date, Customer_Type, Payment_Status, amount_paid, Product, sales_person_id, SALES_PEOPLE(full_name)",
+      "Date"
+    ),
     supabase.from("EXPENSES").select("amount, date, category"),
   ]);
 
@@ -99,7 +114,7 @@ export default async function DashboardPage() {
     const repTotals = new Map<string, number>();
     for (const s of sales ?? []) {
       if (!(s.Date ?? "").startsWith(thisMonthKey)) continue;
-      const repName = (s as unknown as { SALES_PEOPLE?: { full_name: string }[] }).SALES_PEOPLE?.[0]?.full_name;
+      const repName = s.SALES_PEOPLE?.[0]?.full_name;
       if (!repName) continue;
       repTotals.set(repName, (repTotals.get(repName) ?? 0) + (s.Total ?? 0));
     }
