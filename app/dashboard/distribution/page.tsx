@@ -9,6 +9,8 @@ import RecordMamaPurchaseForm from "./components/RecordMamaPurchaseForm";
 import MamaPerformanceOverview from "./components/MamaPerformanceOverview";
 import { REFILL_PRODUCTS } from "./constants";
 
+export const dynamic = "force-dynamic";
+
 export default async function DistributionPage() {
   const supabase = createClient();
 

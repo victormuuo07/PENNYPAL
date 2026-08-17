@@ -7,6 +7,10 @@ import TopPerformers from "@/components/TopPerformers";
 import RecentActivity from "@/components/RecentActivity";
 import TradeHistorySinceLaunch from "@/components/TradeHistorySinceLaunch";
 
+// Never serve a cached/static snapshot — every sale, restock, or expense
+// entered should be reflected on the very next load.
+export const dynamic = "force-dynamic";
+
 type SaleRow = {
   Total: number;
   Date: string;

@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import AssetsPanel from "./components/AssetsPanel";
 import FundingPanel from "./components/FundingPanel";
 
+export const dynamic = "force-dynamic";
+
 export default async function AssetsPage() {
   const supabase = createClient();
 

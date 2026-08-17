@@ -4,6 +4,8 @@ import NewBatchForm from "./components/NewBatchForm";
 import BatchHistory from "./components/BatchHistory";
 import FinishedGoodsPanel from "./components/FinishedGoodsPanel";
 
+export const dynamic = "force-dynamic";
+
 export default async function InventoryPage() {
   const supabase = createClient();
 
