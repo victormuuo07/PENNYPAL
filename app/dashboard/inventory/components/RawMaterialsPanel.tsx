@@ -62,40 +62,42 @@ export default function RawMaterialsPanel({ materials }: { materials: Material[]
     <div className="bg-white rounded-card-lg shadow-soft p-6 space-y-4">
       <h2 className="font-medium text-ink">📦 Raw Materials</h2>
 
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-cream-deep text-ink-soft text-left">
-            <th className="px-3 py-2 font-medium">Material</th>
-            <th className="px-3 py-2 font-medium text-right">Stock (kg)</th>
-            <th className="px-3 py-2 font-medium text-right">Unit Cost</th>
-            <th className="px-3 py-2 font-medium text-right">Reorder Level</th>
-            <th className="px-3 py-2 font-medium">Last Restock</th>
-          </tr>
-        </thead>
-        <tbody>
-          {materials.length === 0 && (
-            <tr>
-              <td colSpan={5} className="px-3 py-4 text-ink-soft text-center">
-                No materials yet — record your first restock below.
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-cream-deep text-ink-soft text-left">
+              <th className="px-3 py-2 font-medium">Material</th>
+              <th className="px-3 py-2 font-medium text-right">Stock (kg)</th>
+              <th className="px-3 py-2 font-medium text-right">Unit Cost</th>
+              <th className="px-3 py-2 font-medium text-right">Reorder Level</th>
+              <th className="px-3 py-2 font-medium">Last Restock</th>
             </tr>
-          )}
-          {materials.map((m) => {
-            const low = m.current_stock_kg <= m.reorder_level;
-            return (
-              <tr key={m.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2">{m.material_name}</td>
-                <td className={`px-3 py-2 text-right font-medium ${low ? "text-red-bright" : ""}`}>
-                  {m.current_stock_kg?.toFixed(2)} {low && "⚠️"}
+          </thead>
+          <tbody>
+            {materials.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-4 text-ink-soft text-center">
+                  No materials yet — record your first restock below.
                 </td>
-                <td className="px-3 py-2 text-right text-ink-soft">KES {m.unit_cost}</td>
-                <td className="px-3 py-2 text-right text-ink-soft">{m.reorder_level}</td>
-                <td className="px-3 py-2 text-ink-soft">{m.last_restock_date ?? "—"}</td>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            )}
+            {materials.map((m) => {
+              const low = m.current_stock_kg <= m.reorder_level;
+              return (
+                <tr key={m.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2">{m.material_name}</td>
+                  <td className={`px-3 py-2 text-right font-medium ${low ? "text-red-bright" : ""}`}>
+                    {m.current_stock_kg?.toFixed(2)} {low && "⚠️"}
+                  </td>
+                  <td className="px-3 py-2 text-right text-ink-soft">KES {m.unit_cost}</td>
+                  <td className="px-3 py-2 text-right text-ink-soft">{m.reorder_level}</td>
+                  <td className="px-3 py-2 text-ink-soft">{m.last_restock_date ?? "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       <form onSubmit={handleRestock} className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-cream-deep">
         <select

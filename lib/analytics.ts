@@ -85,3 +85,17 @@ export function filterByDateRange<T>(rows: T[], getDate: (row: T) => string, fro
 export function lastN<T>(rows: T[], n: number): T[] {
   return rows.slice(-n);
 }
+
+/**
+ * Simple trailing moving average over `window` points (including the
+ * current one). Standard way to smooth out a noisy trend line so the
+ * underlying direction is easier to see than the raw up-and-down.
+ */
+export function movingAverage<T>(data: T[], getValue: (row: T) => number, window: number): number[] {
+  return data.map((_, i) => {
+    const start = Math.max(0, i - window + 1);
+    const slice = data.slice(start, i + 1);
+    const sum = slice.reduce((s, d) => s + getValue(d), 0);
+    return sum / slice.length;
+  });
+}

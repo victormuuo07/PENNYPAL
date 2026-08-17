@@ -127,28 +127,30 @@ export default function FundingPanel({ funding }: { funding: Funding[] }) {
       )}
 
       {funding.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-cream-deep text-ink-soft text-left">
-              <th className="px-3 py-2 font-medium">Date</th>
-              <th className="px-3 py-2 font-medium">Source</th>
-              <th className="px-3 py-2 font-medium">Type</th>
-              <th className="px-3 py-2 font-medium text-right">Amount</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {funding.map((f) => (
-              <tr key={f.id} className="border-t border-cream-deep">
-                <td className="px-3 py-2 text-ink-soft">{f.funding_date}</td>
-                <td className="px-3 py-2">{f.source}</td>
-                <td className="px-3 py-2 text-ink-soft">{f.funding_type}</td>
-                <td className="px-3 py-2 text-right font-medium">KES {f.amount?.toLocaleString()}</td>
-                <td className="px-3 py-2 text-ink-soft">{f.status}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-cream-deep text-ink-soft text-left">
+                <th className="px-3 py-2 font-medium">Date</th>
+                <th className="px-3 py-2 font-medium">Source</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium text-right">Amount</th>
+                <th className="px-3 py-2 font-medium">Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {funding.map((f) => (
+                <tr key={f.id} className="border-t border-cream-deep">
+                  <td className="px-3 py-2 text-ink-soft">{f.funding_date}</td>
+                  <td className="px-3 py-2">{f.source}</td>
+                  <td className="px-3 py-2 text-ink-soft">{f.funding_type}</td>
+                  <td className="px-3 py-2 text-right font-medium">KES {f.amount?.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-ink-soft">{f.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

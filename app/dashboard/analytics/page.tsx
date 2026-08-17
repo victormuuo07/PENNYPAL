@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetchAll";
 import BusinessHealthGauge from "./components/BusinessHealthGauge";
 import SalesTrendChart from "./components/SalesTrendChart";
 import SalesDeepDive from "./components/SalesDeepDive";
@@ -12,6 +13,15 @@ import BatchAnalytics from "./components/BatchAnalytics";
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 
+type SaleRow = {
+  Date: string;
+  Total: number;
+  Customer_Type: string | null;
+  Product: string;
+  sales_person_id: string | null;
+  SALES_PEOPLE: { full_name: string }[] | null;
+};
+
 export default async function AnalyticsPage() {
   const supabase = createClient();
 
@@ -22,7 +32,7 @@ export default async function AnalyticsPage() {
   if (profile?.role !== "owner") redirect("/dashboard");
 
   const [
-    { data: sales },
+    sales,
     { data: expenses },
     { data: hotels },
     { data: refills },
@@ -32,7 +42,12 @@ export default async function AnalyticsPage() {
     { data: outputs },
     { data: costSettingsRows },
   ] = await Promise.all([
-    supabase.from("SALES").select("Date, Total, Customer_Type, Product, sales_person_id, SALES_PEOPLE(full_name)"),
+    fetchAllRows<SaleRow>(
+      supabase,
+      "SALES",
+      "Date, Total, Customer_Type, Product, sales_person_id, SALES_PEOPLE(full_name)",
+      "Date"
+    ),
     supabase.from("EXPENSES").select("date, amount, category"),
     supabase.from("HOTELS").select("id, hotel_name"),
     supabase.from("HOTEL_REFILLS").select("hotel_id, refill_date, amount_paid"),

@@ -52,26 +52,28 @@ export default function Leaderboards({ sales, venues }: { sales: Sale[]; venues:
               <Bar dataKey="revenue" fill="#a01d1d" radius={[0, 4, 4, 0]} name="Revenue" />
             </BarChart>
           </ResponsiveContainer>
-          <table className="w-full text-sm mt-4">
-            <thead>
-              <tr className="text-left text-ink-soft border-b border-cream-deep">
-                <th className="py-2">Rep</th>
-                <th className="py-2 text-right">Sales made</th>
-                <th className="py-2 text-right">Revenue</th>
-                <th className="py-2 text-right">Avg order</th>
-              </tr>
-            </thead>
-            <tbody>
-              {repRanking.map((r) => (
-                <tr key={r.name} className="border-b border-cream-deep last:border-0">
-                  <td className="py-2 font-medium">{r.name}</td>
-                  <td className="py-2 text-right">{r.sales}</td>
-                  <td className="py-2 text-right">KES {r.revenue.toLocaleString()}</td>
-                  <td className="py-2 text-right text-ink-soft">KES {Math.round(r.revenue / r.sales).toLocaleString()}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm mt-4">
+              <thead>
+                <tr className="text-left text-ink-soft border-b border-cream-deep">
+                  <th className="py-2">Rep</th>
+                  <th className="py-2 text-right">Sales made</th>
+                  <th className="py-2 text-right">Revenue</th>
+                  <th className="py-2 text-right">Avg order</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {repRanking.map((r) => (
+                  <tr key={r.name} className="border-b border-cream-deep last:border-0">
+                    <td className="py-2 font-medium">{r.name}</td>
+                    <td className="py-2 text-right">{r.sales}</td>
+                    <td className="py-2 text-right">KES {r.revenue.toLocaleString()}</td>
+                    <td className="py-2 text-right text-ink-soft">KES {Math.round(r.revenue / r.sales).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

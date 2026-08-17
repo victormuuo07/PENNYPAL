@@ -17,36 +17,38 @@ export default function TeamList({ team }: { team: TeamMember[] }) {
 
   return (
     <div className="bg-white rounded-card-lg shadow-soft overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-cream-deep text-ink-soft text-left">
-            <th className="px-4 py-3 font-medium">Name</th>
-            <th className="px-4 py-3 font-medium">Role</th>
-            <th className="px-4 py-3 font-medium">Phone</th>
-            <th className="px-4 py-3 font-medium text-right">Commission</th>
-          </tr>
-        </thead>
-        <tbody>
-          {team.map((t) => (
-            <tr key={t.id} className="border-t border-cream-deep">
-              <td className="px-4 py-3">{t.full_name}</td>
-              <td className="px-4 py-3">
-                <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                    t.role === "owner" ? "bg-gold/10 text-gold-dark" : "bg-blue-50 text-blue-700"
-                  }`}
-                >
-                  {t.role === "owner" ? "🔑 Owner" : "🤝 Sales Rep"}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-ink-soft">{t.SALES_PEOPLE?.[0]?.phone ?? "—"}</td>
-              <td className="px-4 py-3 text-right text-ink-soft">
-                {t.SALES_PEOPLE?.[0] ? `${t.SALES_PEOPLE[0].commission_rate}%` : "—"}
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-cream-deep text-ink-soft text-left">
+              <th className="px-4 py-3 font-medium">Name</th>
+              <th className="px-4 py-3 font-medium">Role</th>
+              <th className="px-4 py-3 font-medium">Phone</th>
+              <th className="px-4 py-3 font-medium text-right">Commission</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {team.map((t) => (
+              <tr key={t.id} className="border-t border-cream-deep">
+                <td className="px-4 py-3">{t.full_name}</td>
+                <td className="px-4 py-3">
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      t.role === "owner" ? "bg-gold/10 text-gold-dark" : "bg-blue-50 text-blue-700"
+                    }`}
+                  >
+                    {t.role === "owner" ? "🔑 Owner" : "🤝 Sales Rep"}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-ink-soft">{t.SALES_PEOPLE?.[0]?.phone ?? "—"}</td>
+                <td className="px-4 py-3 text-right text-ink-soft">
+                  {t.SALES_PEOPLE?.[0] ? `${t.SALES_PEOPLE[0].commission_rate}%` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
