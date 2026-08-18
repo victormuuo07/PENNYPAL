@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import CreateUserForm from "./components/CreateUserForm";
 import TeamList from "./components/TeamList";
 
+export const dynamic = "force-dynamic";
+
 export default async function TeamPage() {
   const supabase = createClient();
 

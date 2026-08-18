@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 const PRODUCTS: Record<string, { price: number; unit: string }> = {
+  "Sachet (dozen pack) - 40 KES": { price: 40, unit: "sachet" },
   "Sachet - 5 KES": { price: 5, unit: "sachet" },
   "Sachet - 20 KES": { price: 20, unit: "sachet" },
   "Sachet - 40 KES": { price: 40, unit: "sachet" },

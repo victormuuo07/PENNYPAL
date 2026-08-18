@@ -3,6 +3,8 @@ import ContactsPanel from "./components/ContactsPanel";
 import AutomatedMessagesPanel from "./components/AutomatedMessagesPanel";
 import MessageHistoryPanel from "./components/MessageHistoryPanel";
 
+export const dynamic = "force-dynamic";
+
 export default async function MessagingPage() {
   const supabase = createClient();
 

@@ -13,6 +13,10 @@ import BatchAnalytics from "./components/BatchAnalytics";
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 
+// Same reasoning as Dashboard — this page must never serve a cached
+// snapshot of sales/expense data.
+export const dynamic = "force-dynamic";
+
 type SaleRow = {
   Date: string;
   Total: number;

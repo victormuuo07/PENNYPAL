@@ -4,6 +4,8 @@ import AddSaleForm from "./components/AddSaleForm";
 import CustomerMixSummary from "./components/CustomerMixSummary";
 import CreditTracker from "./components/CreditTracker";
 
+export const dynamic = "force-dynamic";
+
 export default async function SalesPage() {
   const supabase = createClient();
 

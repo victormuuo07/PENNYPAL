@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import CommissionsTable from "./components/CommissionsTable";
 import CommissionSummary from "./components/CommissionSummary";
 
+export const dynamic = "force-dynamic";
+
 export default async function CommissionsPage() {
   const supabase = createClient();
 

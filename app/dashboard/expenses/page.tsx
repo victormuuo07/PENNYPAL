@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import ExpensesTable from "./components/ExpensesTable";
 import AddExpenseForm from "./components/AddExpenseForm";
 
+export const dynamic = "force-dynamic";
+
 export default async function ExpensesPage() {
   const supabase = createClient();
   const { data: expenses } = await supabase

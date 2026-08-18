@@ -30,7 +30,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "role must be 'owner' or 'rep'" }, { status: 400 });
   }
 
-  const admin = createAdminClient();
+  let admin;
+  try {
+    admin = createAdminClient();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Server misconfiguration" },
+      { status: 500 }
+    );
+  }
 
   const { data: created, error: createError } = await admin.auth.admin.createUser({
     email,
