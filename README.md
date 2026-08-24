@@ -1,105 +1,49 @@
-# PennyPal — SpiseUp Operations App
+# PennyPal — Sales Operations & Distribution Management Platform
 
-Next.js + Supabase rebuild of the old Streamlit app, with role-based auth
-(owner vs sales rep) built in from the start.
+A full-stack operations platform built for **Betarlux Hub**, a food manufacturing company producing SpiseUp (a chili-based spicy salt seasoning) in Kenya. PennyPal replaced manual, paper-based tracking with a real-time system for sales, inventory, distribution, and customer communication — currently in production use.
 
-## What's working now
+## The Problem
 
-- Login (Supabase Auth, email/password)
-- Role-aware sidebar (reps see fewer sections than owners)
-- Dashboard: total balance, sales, expenses, 6-month trend chart
-- Sales: list + add (reps see/add only their own, via `sales_person_id`)
-- Expenses: list + add
-- Distribution & Hotels: add hotels, log refills, performance/territory
-  scoring ported directly from the old `get_hotel_territory_analysis()`
-  Python logic (same revenue/frequency/recency scoring, same tier
-  thresholds) — open to any authenticated user, matching how the old app
-  worked (no rep-scoping on hotels/refills); hotels and Mama Mbogas are
-  both editable in-place (✏️ Edit on each row), not just add-only
-- Mama Mboga & shops: same pattern as Hotels — add shop, record purchase,
-  performance table with Star/Steady/At Risk/Dormant tiers
-- Sales ↔ Distribution linking: selling to a tracked Hotel/Restaurant or
-  Shop/Mama Mboga lets you pick the actual tracked record from a dropdown,
-  and one sale entry automatically logs the matching `HOTEL_REFILLS` or
-  `MAMA_MBOGAS_PURCHASES` row too — no need to enter the same transaction
-  twice
-- Inventory & Production: raw materials + restock, production batches with
-  live material-sufficiency checks, batch history, finished goods stock —
-  restock and batch creation are atomic Postgres functions
-  (`record_material_restock`, `create_production_batch`) rather than
-  several separate client calls, so a failure partway through can't leave
-  stock numbers inconsistent
-- Commissions: rates, per-sale commission tracking, mark-paid (owner);
-  reps see their own commission history
-- Assets & Funding: asset register + funding sources, owner-only
-- Customer Messaging: contacts, automated message rules, message history,
-  and a working send route (`/api/messaging/send`) — needs your Africa's
-  Talking key set server-side in Vercel to actually deliver (see below)
-- RLS policies covering every table above
-- Team page (owner-only): create accounts directly in-app — no public
-  signup, and role (Owner vs Sales Rep) is explicitly chosen when creating
-  each account via `/api/admin/create-user`
-- Analytics page (owner-only): Business Health Score (weighted gauge from
-  profit margin, sales growth, cash runway, cash balance), sales trend with
-  day/week/month/quarter toggle, Sales Deep-Dive (cumulative chart,
-  best/worst day of week, week-over-week, auto-insights), Sales Rep and
-  Hotel/Shop leaderboards, Product Profitability calculator (editable cost
-  config saved to `COST_SETTINGS`, per-product margin using the same
-  ingredient+packaging cost formula as the old Streamlit Profit
-  Calculator), expense category breakdown + monthly trend + auto-generated
-  spending insights, hotel/Mama Mboga refill frequency and top performers,
-  batch production frequency and finished-goods mix
-- Branded loading screen shown while the app checks who's logged in
+Betarlux Hub sells through two channels — hotels (B2B) and Mama Mbogas/informal retailers (B2C-adjacent) — across multiple territories. Tracking refill frequency, inventory, commissions, and customer follow-up manually didn't scale. The business needed a single system that could:
 
-## Still on the roadmap
+- Track sales across channels with rep-level attribution
+- Flag hotels/retailers going "silent" before they churned
+- Automate restocking reminders via SMS (many customers don't use apps or email)
+- Give ownership a real-time view of business health, not a monthly spreadsheet reconciliation
 
-- **Real eTIMS submission** — sales now generate a structured `INVOICES`
-  record (subtotal/VAT/total, matches KRA's shape) but nothing is actually
-  submitted to eTIMS yet. That needs your real KRA/eTIMS device credentials
-  before any submission code can be written and tested.
-- **Generic Distribution-table entries** — `DISTRIBUTION` (with
-  `distributor_type`, `quantity_distributed`, etc.) has RLS but no form yet;
-  only Hotel Refills are wired up so far
-- Actually scheduling automated messages (needs Vercel Cron)
-- Connecting Credit Tracker overdue balances to automatic SMS reminders —
-  the Credit Tracker and Messaging both exist now, just not wired together
-- Deeper expense category breakdown/trend charts
-- AI/ML: spending predictions, forecasting
+## What It Does
 
-## Setup
+**Core modules:**
+- **Dashboard** — Business Health Score gauge, sales trends, bottleneck detection
+- **Sales & Distribution** — Invoice-style entry linking a single sale to both hotel refills and Mama Mboga purchases, with salesperson attribution
+- **Inventory & Production** — Batch tracking with product-level breakdown
+- **Commissions** — Automated calculation tied to sales attribution
+- **Customer Messaging** — SMS-based restocking automation via Africa's Talking, including credit tracking and "gone silent" alerts
+- **Analytics** — Deep-dive charts across every table: B2C vs B2B split, sales rep and hotel leaderboards, product profitability calculator, expense insights
+- **Territory Analysis** — Hotel performance scoring (0–100 composite across revenue, refill frequency, and recency) with tier labels (Star, Growing, Steady, At Risk, Dormant, New)
 
-1. `npm install`
-2. Copy `.env.local.example` to `.env.local` and fill in your Supabase
-   project URL, **anon** key, and **service_role** key (all three from
-   Supabase → Project Settings → API). The service role key powers the
-   Team page's account creation and must stay server-side only — never
-   prefix it with `NEXT_PUBLIC_`.
-3. Run `supabase/schema.sql` against your Supabase project (SQL Editor, or
-   `supabase db push` if you use the CLI). This adds the `profiles` table,
-   role logic, and turns on RLS for every table listed above. Safe to
-   re-run after any future update — every policy is dropped and recreated
-   rather than erroring on "already exists".
-4. Create your own owner account **once**, manually, since the Team page
-   itself needs an owner logged in to use it: create a user in Supabase
-   Auth, then run
-   ```sql
-   insert into public.profiles (id, full_name, role)
-   values ('<your-auth-user-uuid>', 'Victor', 'owner');
-   ```
-5. `npm run dev`, log in with that account, and go to the **Team** page in
-   the sidebar (owner-only) — from here on, create every other account
-   (yourself as a second owner, Victoria, sales reps) through that form
-   instead of touching SQL. Picking "Owner" or "Sales Rep" there is what
-   actually differentiates the two — nothing about it is automatic.
+**Access control:** Owner/rep role model with Supabase Row-Level Security. No public signup — accounts are provisioned by the owner through an admin API route with explicit role assignment.
 
-Deploy to Vercel: connect the GitHub repo, add all five env vars (the two
-`NEXT_PUBLIC_` Supabase ones, `SUPABASE_SERVICE_ROLE_KEY`, and the two
-Africa's Talking ones) in Vercel's project settings, deploy.
+## Tech Stack
 
-Every module from the roadmap is now built (Dashboard, Sales, Expenses,
-Distribution, Inventory & Production, Commissions, Assets & Funding,
-Customer Messaging). What's left is listed in "Still on the roadmap" above.
+- **Frontend:** Next.js, Tailwind CSS, Recharts
+- **Backend:** Supabase (Postgres, Auth, RLS)
+- **Messaging:** Africa's Talking SMS API
+- **Deployment:** Netlify (originally prototyped in Streamlit before a full rebuild)
 
-Each module follows the same pattern already established: a server component
-page that queries Supabase, a client "Add" form component, and a table
-component. Bring me back to build the next one whenever you're ready.
+## Engineering Notes (Problems Solved)
+
+A few real production issues worth mentioning because they weren't obvious from local development:
+
+- **Stale dashboard data after deploy:** Next.js caches `fetch()` calls by default, including through the Supabase client — and that cache survived redeploys, so the dashboard kept showing only the latest month. Fixed by forcing `cache: "no-store"` on every server-side Supabase query and adding `export const dynamic = "force-dynamic"` to each dashboard page.
+- **Silent account-creation failures:** The Team page's account creation route hung and failed silently on Netlify because the `SUPABASE_SERVICE_ROLE_KEY` environment variable was missing (only the public keys were set). Rewrote the route to fail fast with a clear error instead of hanging indefinitely.
+- **Type-checking gaps between local and CI builds:** Local dev mode didn't surface several real type errors (an invalid named export, Supabase join array-typing mismatches, implicit-`any` cookie options) that only appeared during Netlify's production build. Resolved all of them and now verify a clean `next build` before every deploy.
+- **SMS integration debugging:** Diagnosed and fixed missing API keys in Streamlit Cloud secrets, incorrect query parameters, and a race condition between auto-refresh timers and button click state.
+
+## Status
+
+Live in production. Core modules complete; in progress: automated message scheduling via Vercel Cron and AI/ML-based demand forecasting.
+
+---
+
+*Built and maintained by Victor Muuo — [github.com/victormuuo07](https://github.com/victormuuo07) · [linkedin.com/in/victor-muuo](https://linkedin.com/in/victor-muuo)*
