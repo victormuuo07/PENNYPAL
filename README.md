@@ -2,7 +2,7 @@
 
 A full-stack operations platform built for **Betarlux Hub**, a food manufacturing company producing SpiseUp (a chili-based spicy salt seasoning) in Kenya. PennyPal replaced manual, paper-based tracking with a real-time system for sales, inventory, distribution, and customer communication — currently in production use.
 
-![Dashboard](./screenshots/dashboard.png)
+![Dashboard](./screenshots/dashboard.jpeg)
 *Business Health Score dashboard — real-time view of sales, distribution, and bottlenecks*
 
 ## The Problem
@@ -25,10 +25,10 @@ Betarlux Hub sells through two channels — hotels (B2B) and Mama Mbogas/informa
 - **Analytics** — Deep-dive charts across every table: B2C vs B2B split, sales rep and hotel leaderboards, product profitability calculator, expense insights
 - **Territory Analysis** — Hotel performance scoring (0–100 composite across revenue, refill frequency, and recency) with tier labels (Star, Growing, Steady, At Risk, Dormant, New)
 
-![Analytics](./screenshots/analytics.png)
+![Analytics](./screenshots/analytics.jpeg)
 *Deep-dive analytics — B2C vs B2B split, rep and hotel leaderboards, product profitability*
 
-![Territory Scoring](./screenshots/territory-scoring.png)
+![Territory Scoring](./screenshots/territory-scoring.jpeg)
 *Hotel performance scoring with tier classification*
 
 **Access control:** Owner/rep role model with Supabase Row-Level Security. No public signup — accounts are provisioned by the owner through an admin API route with explicit role assignment.
