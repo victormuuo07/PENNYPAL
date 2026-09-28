@@ -12,6 +12,7 @@ const OWNER_ONLY = new Set([
   "/dashboard/messaging",
   "/dashboard/team",
   "/dashboard/analytics",
+  "/dashboard/qc",
 ]);
 
 const NAV = [
@@ -21,6 +22,7 @@ const NAV = [
   { href: "/dashboard/expenses", label: "Expenses", icon: "🧾" },
   { href: "/dashboard/distribution", label: "Distribution", icon: "🚚" },
   { href: "/dashboard/inventory", label: "Inventory & Production", icon: "📦" },
+  { href: "/dashboard/qc", label: "Quality & HACCP", icon: "🧪" },
   { href: "/dashboard/commissions", label: "Commissions", icon: "🤝" },
   { href: "/dashboard/messaging", label: "Customer Messaging", icon: "📱" },
   { href: "/dashboard/assets", label: "Assets & Funding", icon: "🏷️" },
@@ -79,7 +81,7 @@ export default function Sidebar({ role, name }: { role: string; name: string }) 
 
         <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
           {items.map((item) => {
-            const active = pathname === item.href;
+            const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
             return (
               <Link
                 key={item.href}
@@ -116,7 +118,7 @@ export default function Sidebar({ role, name }: { role: string; name: string }) 
     <>
       {/* Mobile top bar — only visible below md breakpoint. Fixed so it
           stays put while the page content scrolls underneath it. */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-30 bg-maroon text-cream flex items-center justify-between px-4 py-3 shadow-soft">
+      <div className="md:hidden print:hidden fixed top-0 left-0 right-0 z-30 bg-maroon text-cream flex items-center justify-between px-4 py-3 shadow-soft">
         <button onClick={() => setMobileOpen(true)} className="text-xl" aria-label="Open menu">
           ☰
         </button>
@@ -127,13 +129,13 @@ export default function Sidebar({ role, name }: { role: string; name: string }) 
       {/* Backdrop — tapping it closes the drawer, same as tapping outside
           any mobile menu */}
       {mobileOpen && (
-        <div className="md:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMobileOpen(false)} />
+        <div className="md:hidden print:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMobileOpen(false)} />
       )}
 
       {/* Mobile drawer — always shows full labels, collapsing doesn't make
           sense on a phone where the drawer isn't taking up permanent space */}
       <aside
-        className={`md:hidden fixed top-0 left-0 bottom-0 w-72 z-50 bg-gradient-to-b from-maroon to-red text-cream flex flex-col transition-transform duration-200 ${
+        className={`md:hidden print:hidden fixed top-0 left-0 bottom-0 w-72 z-50 bg-gradient-to-b from-maroon to-red text-cream flex flex-col transition-transform duration-200 ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -144,7 +146,7 @@ export default function Sidebar({ role, name }: { role: string; name: string }) 
           (w-16). The toggle button sits on the edge, same pattern as most
           admin dashboards. */}
       <aside
-        className={`hidden md:flex shrink-0 bg-gradient-to-b from-maroon to-red text-cream flex-col relative transition-all duration-200 ${
+        className={`hidden md:flex print:!hidden shrink-0 bg-gradient-to-b from-maroon to-red text-cream flex-col relative transition-all duration-200 ${
           collapsed ? "w-16" : "w-64"
         }`}
       >
