@@ -1,0 +1,2396 @@
+From c404d85eff097ca372d699e0a7c9fdfcac0ac7b1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 06:03:04 +0000
+Subject: [PATCH] Add Quality & HACCP module: 15 record types, CCP auto-checks,
+ monthly print report
+
+---
+ app/dashboard/layout.tsx                      |   2 +-
+ app/dashboard/qc/[type]/page.tsx              |  84 +++
+ app/dashboard/qc/components/MonthPicker.tsx   |  30 +
+ app/dashboard/qc/components/PrintButton.tsx   |   9 +
+ .../qc/components/QcRecordManager.tsx         | 472 ++++++++++++
+ app/dashboard/qc/components/QcTable.tsx       |  79 ++
+ app/dashboard/qc/components/ReviewSignoff.tsx |  67 ++
+ app/dashboard/qc/haccp/page.tsx               | 137 ++++
+ app/dashboard/qc/page.tsx                     | 198 +++++
+ app/dashboard/qc/report/page.tsx              | 201 +++++
+ components/Sidebar.tsx                        |  12 +-
+ lib/qc/config.ts                              | 703 ++++++++++++++++++
+ lib/qc/queries.ts                             | 158 ++++
+ supabase/qc_schema.sql                        |  72 ++
+ 14 files changed, 2218 insertions(+), 6 deletions(-)
+ create mode 100644 app/dashboard/qc/[type]/page.tsx
+ create mode 100644 app/dashboard/qc/components/MonthPicker.tsx
+ create mode 100644 app/dashboard/qc/components/PrintButton.tsx
+ create mode 100644 app/dashboard/qc/components/QcRecordManager.tsx
+ create mode 100644 app/dashboard/qc/components/QcTable.tsx
+ create mode 100644 app/dashboard/qc/components/ReviewSignoff.tsx
+ create mode 100644 app/dashboard/qc/haccp/page.tsx
+ create mode 100644 app/dashboard/qc/page.tsx
+ create mode 100644 app/dashboard/qc/report/page.tsx
+ create mode 100644 lib/qc/config.ts
+ create mode 100644 lib/qc/queries.ts
+ create mode 100644 supabase/qc_schema.sql
+
+diff --git a/app/dashboard/layout.tsx b/app/dashboard/layout.tsx
+index 60f3a27..01d4ccf 100644
+--- a/app/dashboard/layout.tsx
++++ b/app/dashboard/layout.tsx
+@@ -25,7 +25,7 @@ export default async function DashboardLayout({
+   return (
+     <div className="flex min-h-screen">
+       <Sidebar role={role} name={profile?.full_name ?? user.email ?? ""} />
+-      <main className="flex-1 p-4 pt-20 md:p-8 md:pt-8 min-w-0">{children}</main>
++      <main className="flex-1 p-4 pt-20 md:p-8 md:pt-8 min-w-0 print:p-0 print:pt-0">{children}</main>
+     </div>
+   );
+ }
+diff --git a/app/dashboard/qc/[type]/page.tsx b/app/dashboard/qc/[type]/page.tsx
+new file mode 100644
+index 0000000..2889d68
+--- /dev/null
++++ b/app/dashboard/qc/[type]/page.tsx
+@@ -0,0 +1,84 @@
++import Link from "next/link";
++import { notFound } from "next/navigation";
++import { createClient } from "@/lib/supabase/server";
++import { requireOwner } from "@/lib/requireOwner";
++import { RECORD_TYPE_MAP, str } from "@/lib/qc/config";
++import { currentMonth, fetchQcRecords, isValidMonth, monthLabel, monthRange, type QcReview } from "@/lib/qc/queries";
++import MonthPicker from "../components/MonthPicker";
++import QcRecordManager, { type Suggestions } from "../components/QcRecordManager";
++import ReviewSignoff from "../components/ReviewSignoff";
++
++export const dynamic = "force-dynamic";
++
++export default async function QcTypePage({ params, searchParams }: { params: { type: string }; searchParams: { month?: string } }) {
++  await requireOwner();
++  const cfg = RECORD_TYPE_MAP[params.type];
++  if (!cfg) notFound();
++
++  const supabase = createClient();
++  const month = isValidMonth(searchParams.month) ? searchParams.month : currentMonth();
++  const { from, to } = monthRange(month);
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  const [records, profileRes, reviewRes, batchesRes, materialsRes, goodsRes, historyRes] = await Promise.all([
++    fetchQcRecords(supabase, { from, to, type: cfg.key }),
++    supabase.from("profiles").select("full_name").eq("id", user!.id).single(),
++    supabase.from("QC_REVIEWS").select("record_type, reviewed_by, reviewed_at, notes").eq("review_month", `${month}-01`).eq("record_type", cfg.key).maybeSingle(),
++    supabase.from("BATCHES").select("batch_number, production_date").order("production_date", { ascending: false }).limit(150),
++    supabase.from("RAW_MATERIALS_INVENTORY").select("material_name").order("material_name"),
++    supabase.from("FINISHED_GOODS_INVENTORY").select("product_type").order("product_type"),
++    // Past values of this log's free-text fields → autocomplete for names, areas, suppliers
++    supabase.from("QC_RECORDS").select("data").eq("record_type", cfg.key).eq("is_nil", false).order("created_at", { ascending: false }).limit(300),
++  ]);
++
++  const history: Record<string, string[]> = {};
++  for (const f of cfg.fields.filter((f) => f.suggest === "history")) {
++    const seen = new Set<string>();
++    for (const row of historyRes.data ?? []) {
++      const v = str(row.data as Record<string, string>, f.key);
++      if (v) seen.add(v);
++    }
++    history[f.key] = Array.from(seen).slice(0, 40);
++  }
++
++  const batches = batchesRes.data ?? [];
++  const suggestions: Suggestions = {
++    batches: batches.map((b) => b.batch_number),
++    batchDates: Object.fromEntries(batches.map((b) => [b.batch_number, b.production_date])),
++    materials: (materialsRes.data ?? []).map((m) => m.material_name),
++    products: (goodsRes.data ?? []).map((g) => g.product_type),
++    history,
++  };
++
++  const reviewerName = profileRes.data?.full_name ?? user?.email ?? "Supervisor";
++
++  return (
++    <div className="space-y-6">
++      <div className="flex flex-wrap items-start justify-between gap-4">
++        <div>
++          <Link href={`/dashboard/qc?month=${month}`} className="text-xs text-ink-soft hover:text-maroon">
++            ← Quality & HACCP
++          </Link>
++          <h1 className="text-2xl font-semibold text-maroon mt-1">
++            {cfg.icon} {cfg.label}
++          </h1>
++          <p className="text-ink-soft text-sm max-w-3xl">{cfg.description}</p>
++        </div>
++        <div className="flex flex-wrap items-center gap-2">
++          <MonthPicker basePath={`/dashboard/qc/${cfg.key}`} month={month} />
++        </div>
++      </div>
++
++      <ReviewSignoff typeKey={cfg.key} month={month} reviewerName={reviewerName} review={(reviewRes.data as QcReview | null) ?? null} />
++
++      <div className="text-xs text-ink-soft -mb-2">
++        {monthLabel(month)} · {records.length} {records.length === 1 ? "entry" : "entries"} · logged {cfg.frequency.toLowerCase()}
++      </div>
++
++      <QcRecordManager typeKey={cfg.key} records={records} suggestions={suggestions} enteredByName={reviewerName} />
++    </div>
++  );
++}
+diff --git a/app/dashboard/qc/components/MonthPicker.tsx b/app/dashboard/qc/components/MonthPicker.tsx
+new file mode 100644
+index 0000000..34246c2
+--- /dev/null
++++ b/app/dashboard/qc/components/MonthPicker.tsx
+@@ -0,0 +1,30 @@
++"use client";
++
++import Link from "next/link";
++import { useRouter } from "next/navigation";
++import { monthLabel, shiftMonth } from "@/lib/qc/queries";
++
++/** ‹ September 2026 › with a native month input for jumping further. */
++export default function MonthPicker({ basePath, month }: { basePath: string; month: string }) {
++  const router = useRouter();
++  return (
++    <div className="flex items-center gap-2 print:hidden">
++      <Link href={`${basePath}?month=${shiftMonth(month, -1)}`} className="px-3 py-2 rounded-card bg-white shadow-soft text-sm hover:bg-cream-deep" aria-label="Previous month">
++        ‹
++      </Link>
++      <label className="relative">
++        <span className="block px-4 py-2 rounded-card bg-white shadow-soft text-sm font-medium text-maroon min-w-[9rem] text-center">{monthLabel(month)}</span>
++        <input
++          type="month"
++          value={month}
++          onChange={(e) => e.target.value && router.push(`${basePath}?month=${e.target.value}`)}
++          className="absolute inset-0 opacity-0 cursor-pointer"
++          aria-label="Choose month"
++        />
++      </label>
++      <Link href={`${basePath}?month=${shiftMonth(month, 1)}`} className="px-3 py-2 rounded-card bg-white shadow-soft text-sm hover:bg-cream-deep" aria-label="Next month">
++        ›
++      </Link>
++    </div>
++  );
++}
+diff --git a/app/dashboard/qc/components/PrintButton.tsx b/app/dashboard/qc/components/PrintButton.tsx
+new file mode 100644
+index 0000000..9194e74
+--- /dev/null
++++ b/app/dashboard/qc/components/PrintButton.tsx
+@@ -0,0 +1,9 @@
++"use client";
++
++export default function PrintButton({ label = "🖨️ Print / Save as PDF" }: { label?: string }) {
++  return (
++    <button onClick={() => window.print()} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium transition-colors print:hidden">
++      {label}
++    </button>
++  );
++}
+diff --git a/app/dashboard/qc/components/QcRecordManager.tsx b/app/dashboard/qc/components/QcRecordManager.tsx
+new file mode 100644
+index 0000000..be4a6dd
+--- /dev/null
++++ b/app/dashboard/qc/components/QcRecordManager.tsx
+@@ -0,0 +1,472 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { useRouter } from "next/navigation";
++import { createClient } from "@/lib/supabase/client";
++import { evaluate, RECORD_TYPE_MAP, str, type Data, type Field, type RecordTypeConfig } from "@/lib/qc/config";
++import { todayNairobi, type QcRecord } from "@/lib/qc/queries";
++import QcTable from "./QcTable";
++
++export type Suggestions = {
++  batches: string[];
++  /** batch number → its production date, used to pre-fill traceability records */
++  batchDates: Record<string, string>;
++  materials: string[];
++  products: string[];
++  /** field key → distinct values previously entered in this log (names, areas, suppliers…) */
++  history: Record<string, string[]>;
++};
++
++type Mode = { kind: "new" } | { kind: "edit"; record: QcRecord } | { kind: "nil" } | null;
++
++const inputCls = "w-full rounded-card border border-cream-deep px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/60";
++
++function nowTime() {
++  return new Date().toLocaleTimeString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit" });
++}
++
++function initialValue(f: Field): string {
++  if (f.default === "today") return todayNairobi();
++  if (f.default === "now") return nowTime();
++  return f.default ?? "";
++}
++
++function blankForm(cfg: RecordTypeConfig, keep?: Record<string, string>): Record<string, string> {
++  const out: Record<string, string> = {};
++  for (const f of cfg.fields) out[f.key] = keep && f.sticky && keep[f.key] !== undefined ? keep[f.key] : initialValue(f);
++  return out;
++}
++
++function explainDbError(msg: string): string {
++  if (/QC_RECORDS|QC_REVIEWS/.test(msg) && /(does not exist|schema cache|relation)/i.test(msg)) {
++    return "The QC tables don't exist yet — run supabase/qc_schema.sql in the Supabase SQL editor first.";
++  }
++  return msg;
++}
++
++export default function QcRecordManager({
++  typeKey,
++  records,
++  suggestions,
++  enteredByName,
++}: {
++  typeKey: string;
++  records: QcRecord[];
++  suggestions: Suggestions;
++  enteredByName: string;
++}) {
++  const cfg = RECORD_TYPE_MAP[typeKey];
++  const router = useRouter();
++  const supabase = createClient();
++  const [mode, setMode] = useState<Mode>(null);
++  const [filter, setFilter] = useState<"all" | "flagged" | "open">("all");
++  const [notice, setNotice] = useState<string | null>(null);
++
++  const visible = useMemo(
++    () => records.filter((r) => (filter === "flagged" ? r.is_flagged : filter === "open" ? r.is_open : true)),
++    [records, filter]
++  );
++  const flaggedCount = records.filter((r) => r.is_flagged).length;
++  const openCount = records.filter((r) => r.is_open).length;
++
++  async function handleDelete(r: QcRecord) {
++    if (!confirm("Delete this record? This removes it from the monthly report too.")) return;
++    const { error } = await supabase.from("QC_RECORDS").delete().eq("id", r.id);
++    if (error) setNotice(explainDbError(error.message));
++    else router.refresh();
++  }
++
++  if (!cfg) return null;
++
++  return (
++    <div className="space-y-4">
++      <div className="flex flex-wrap items-center gap-2 print:hidden">
++        <button
++          onClick={() => {
++            setNotice(null);
++            setMode({ kind: "new" });
++          }}
++          className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium transition-colors"
++        >
++          + New entry
++        </button>
++        {cfg.nilAllowed && (
++          <button
++            onClick={() => {
++              setNotice(null);
++              setMode({ kind: "nil" });
++            }}
++            className="bg-white shadow-soft hover:bg-cream-deep text-maroon rounded-card px-4 py-2 text-sm font-medium"
++          >
++            Log NIL entry
++          </button>
++        )}
++        <div className="ml-auto flex gap-1 text-sm">
++          {(
++            [
++              ["all", `All (${records.length})`],
++              ["flagged", `Flagged (${flaggedCount})`],
++              ["open", `Open (${openCount})`],
++            ] as const
++          )
++            .filter(([k]) => k !== "open" || cfg.closeKey)
++            .map(([k, label]) => (
++              <button
++                key={k}
++                onClick={() => setFilter(k)}
++                className={`px-3 py-1.5 rounded-card ${filter === k ? "bg-maroon text-cream" : "bg-white shadow-soft text-ink-soft hover:bg-cream-deep"}`}
++              >
++                {label}
++              </button>
++            ))}
++        </div>
++      </div>
++
++      {notice && <div className="bg-red-50 text-red-bright text-sm rounded-card px-4 py-3">{notice}</div>}
++
++      {mode?.kind === "nil" && (
++        <NilForm
++          cfg={cfg}
++          enteredByName={enteredByName}
++          onClose={() => setMode(null)}
++          onSaved={() => {
++            setMode(null);
++            router.refresh();
++          }}
++        />
++      )}
++
++      {(mode?.kind === "new" || mode?.kind === "edit") && (
++        <EntryForm
++          key={mode.kind === "edit" ? mode.record.id : "new"}
++          cfg={cfg}
++          record={mode.kind === "edit" ? mode.record : null}
++          suggestions={suggestions}
++          enteredByName={enteredByName}
++          onClose={() => setMode(null)}
++          onSaved={(again) => {
++            if (!again) setMode(null);
++            router.refresh();
++          }}
++        />
++      )}
++
++      {visible.length === 0 ? (
++        <div className="bg-white rounded-card-lg shadow-soft p-6 text-ink-soft text-sm">
++          {records.length === 0 ? "No entries for this month yet." : "No entries match this filter."}
++        </div>
++      ) : (
++        <div className="bg-white rounded-card-lg shadow-soft overflow-hidden">
++          <div className="overflow-x-auto">
++            <QcTable
++              typeKey={typeKey}
++              records={visible}
++              renderActions={(r) => (
++                <span className="flex gap-3 text-xs print:hidden">
++                  {!r.is_nil && (
++                    <button onClick={() => setMode({ kind: "edit", record: r })} className="text-maroon hover:underline">
++                      {r.is_open ? "Edit / close" : "Edit"}
++                    </button>
++                  )}
++                  <button onClick={() => handleDelete(r)} className="text-ink-soft hover:text-red-bright hover:underline">
++                    Delete
++                  </button>
++                </span>
++              )}
++            />
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
++
++// --------------------------------------------------------------- entry form
++
++function EntryForm({
++  cfg,
++  record,
++  suggestions,
++  enteredByName,
++  onClose,
++  onSaved,
++}: {
++  cfg: RecordTypeConfig;
++  record: QcRecord | null;
++  suggestions: Suggestions;
++  enteredByName: string;
++  onClose: () => void;
++  onSaved: (addAnother: boolean) => void;
++}) {
++  const supabase = createClient();
++  const [form, setForm] = useState<Record<string, string>>(() => {
++    if (!record) return blankForm(cfg);
++    const out = blankForm(cfg);
++    for (const f of cfg.fields) out[f.key] = record.data[f.key] === undefined ? "" : String(record.data[f.key]);
++    return out;
++  });
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [savedMsg, setSavedMsg] = useState<string | null>(null);
++
++  // Limits are checked live AND re-applied on save, so a CCP breach can never be stored as "Pass".
++  const ev = useMemo(() => evaluate(cfg, form as Data), [cfg, form]);
++  const eff = ev.data as Record<string, string | number>;
++  const forced = (key: string) => !!(cfg.autoFail && cfg.resultKey === key && ev.reasons.length > 0);
++
++  function set(key: string, value: string) {
++    setForm((f) => {
++      const next = { ...f, [key]: value };
++      if (key === cfg.batchKey) {
++        const date = suggestions.batchDates[value];
++        const target = cfg.fields.find((x) => x.fromBatchDate);
++        if (date && target) next[target.key] = date;
++      }
++      return next;
++    });
++  }
++
++  function listId(f: Field) {
++    return f.suggest ? `qc-${cfg.key}-${f.key}` : undefined;
++  }
++  function listValues(f: Field): string[] {
++    if (f.suggest === "batches") return suggestions.batches;
++    if (f.suggest === "materials") return suggestions.materials;
++    if (f.suggest === "products") return suggestions.products;
++    if (f.suggest === "history") return suggestions.history[f.key] ?? [];
++    return [];
++  }
++
++  async function save(addAnother: boolean) {
++    setError(null);
++    setSavedMsg(null);
++
++    for (const f of cfg.fields) {
++      if (f.required && String(eff[f.key] ?? "").trim() === "") {
++        setError(`"${f.label}" is required`);
++        return;
++      }
++    }
++    const invalid = cfg.validate?.(eff as Data);
++    if (invalid) {
++      setError(invalid);
++      return;
++    }
++    if (ev.flagged && cfg.correctiveKey && str(eff as Data, cfg.correctiveKey) === "") {
++      const label = cfg.fields.find((f) => f.key === cfg.correctiveKey)?.label ?? "Corrective action";
++      setError(`This entry is flagged (${ev.reasons.join("; ")}). Record what was done in "${label}" before saving.`);
++      return;
++    }
++
++    // Store numbers as numbers, drop empties
++    const clean: Data = {};
++    for (const f of cfg.fields) {
++      const v = String(eff[f.key] ?? "").trim();
++      if (v === "") continue;
++      clean[f.key] = f.type === "number" ? Number(v) : v;
++    }
++
++    const payload = {
++      record_type: cfg.key,
++      record_date: clean[cfg.dateKey],
++      batch_number: cfg.batchKey ? (clean[cfg.batchKey] as string | undefined) ?? null : null,
++      data: clean,
++      is_nil: false,
++      is_flagged: ev.flagged,
++      flag_reason: ev.flagged ? ev.reasons.join("; ") : null,
++      is_open: ev.open,
++    };
++
++    setSaving(true);
++    const { error: dbError } = record
++      ? await supabase.from("QC_RECORDS").update(payload).eq("id", record.id)
++      : await supabase.from("QC_RECORDS").insert({ ...payload, entered_by_name: enteredByName });
++    setSaving(false);
++
++    if (dbError) {
++      setError(explainDbError(dbError.message));
++      return;
++    }
++    if (addAnother) {
++      setForm((prev) => blankForm(cfg, prev));
++      setSavedMsg(ev.flagged ? "Saved and flagged ⚑ — ready for the next entry" : "Saved ✓ — ready for the next entry");
++    }
++    onSaved(addAnother);
++  }
++
++  return (
++    <div className="bg-white rounded-card-lg shadow-soft overflow-hidden print:hidden">
++      <div className="bg-maroon text-cream px-6 py-4 flex items-center justify-between">
++        <div>
++          <div className="font-semibold">
++            {cfg.icon} {record ? "Edit" : "New"} — {cfg.label}
++          </div>
++          <div className="text-xs text-cream-deep">{cfg.frequency}</div>
++        </div>
++        <button onClick={onClose} className="text-cream-deep hover:text-white text-sm" type="button">
++          ✕ Close
++        </button>
++      </div>
++
++      <form
++        onSubmit={(e) => {
++          e.preventDefault();
++          save(false);
++        }}
++        className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
++      >
++        {cfg.fields.map((f) => (
++          <label key={f.key} className={`block ${f.full ? "sm:col-span-2 lg:col-span-3" : ""}`}>
++            <span className="block text-xs font-medium text-ink-soft mb-1">
++              {f.label}
++              {f.required && <span className="text-red-bright"> *</span>}
++            </span>
++            {f.type === "select" ? (
++              <select
++                value={String(eff[f.key] ?? "")}
++                onChange={(e) => set(f.key, e.target.value)}
++                disabled={forced(f.key)}
++                className={`${inputCls} ${forced(f.key) ? "bg-red-50 text-red-bright font-medium" : ""}`}
++              >
++                {(!f.default || !eff[f.key]) && <option value="">Select…</option>}
++                {f.options?.map((o) => (
++                  <option key={o}>{o}</option>
++                ))}
++              </select>
++            ) : f.type === "textarea" ? (
++              <textarea rows={2} value={String(eff[f.key] ?? "")} onChange={(e) => set(f.key, e.target.value)} placeholder={f.placeholder} className={inputCls} />
++            ) : (
++              <input
++                type={f.type}
++                step={f.type === "number" ? f.step ?? "any" : undefined}
++                value={String(eff[f.key] ?? "")}
++                onChange={(e) => set(f.key, e.target.value)}
++                placeholder={f.placeholder}
++                list={listId(f)}
++                autoComplete="off"
++                className={inputCls}
++              />
++            )}
++            {f.suggest && (
++              <datalist id={listId(f)}>
++                {listValues(f).map((v) => (
++                  <option key={v} value={v} />
++                ))}
++              </datalist>
++            )}
++          </label>
++        ))}
++
++        {ev.reasons.length > 0 && (
++          <div className="sm:col-span-2 lg:col-span-3 bg-red-50 border border-red-bright/30 rounded-card px-4 py-3 text-sm text-red-bright">
++            <div className="font-semibold mb-1">⚑ This entry will be flagged</div>
++            <ul className="list-disc pl-5 space-y-0.5">
++              {ev.reasons.map((r) => (
++                <li key={r}>{r}</li>
++              ))}
++            </ul>
++            {cfg.autoFail && <div className="mt-1 text-xs">Result has been set to {cfg.failValues?.[0]} automatically.</div>}
++            {cfg.correctiveKey && <div className="mt-1 text-xs">A corrective action is required before saving.</div>}
++          </div>
++        )}
++        {cfg.ccpTag?.(eff as Data) && ev.reasons.length === 0 && (
++          <div className="sm:col-span-2 lg:col-span-3 bg-gold/10 rounded-card px-4 py-2 text-xs text-ink-soft">
++            📌 This is a {cfg.ccpTag(eff as Data)} monitoring record.
++          </div>
++        )}
++
++        <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap gap-2 justify-end items-center">
++          {error && <span className="text-red-bright text-sm mr-auto">{error}</span>}
++          {savedMsg && !error && <span className="text-green-700 text-sm mr-auto">{savedMsg}</span>}
++          <button type="button" onClick={onClose} className="px-4 py-2 rounded-card text-sm text-ink-soft hover:bg-cream-deep">
++            Cancel
++          </button>
++          {!record && (
++            <button
++              type="button"
++              disabled={saving}
++              onClick={() => save(true)}
++              className="bg-white border border-maroon text-maroon rounded-card px-4 py-2 text-sm font-medium hover:bg-cream-deep disabled:opacity-60"
++            >
++              Save &amp; add another
++            </button>
++          )}
++          <button type="submit" disabled={saving} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium disabled:opacity-60">
++            {saving ? "Saving…" : record ? "Save changes" : "Save entry"}
++          </button>
++        </div>
++      </form>
++    </div>
++  );
++}
++
++// ---------------------------------------------------------------- NIL entry
++
++function NilForm({
++  cfg,
++  enteredByName,
++  onClose,
++  onSaved,
++}: {
++  cfg: RecordTypeConfig;
++  enteredByName: string;
++  onClose: () => void;
++  onSaved: () => void;
++}) {
++  const supabase = createClient();
++  const [date, setDate] = useState(todayNairobi());
++  const [by, setBy] = useState(enteredByName);
++  const [note, setNote] = useState("");
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  async function save(e: React.FormEvent) {
++    e.preventDefault();
++    if (!by.trim()) {
++      setError("Enter the initials / name of who confirmed this");
++      return;
++    }
++    setSaving(true);
++    const data: Data = { logged_by: by.trim() };
++    if (note.trim()) data.note = note.trim();
++    const { error: dbError } = await supabase.from("QC_RECORDS").insert({
++      record_type: cfg.key,
++      record_date: date,
++      data,
++      is_nil: true,
++      entered_by_name: enteredByName,
++    });
++    setSaving(false);
++    if (dbError) setError(explainDbError(dbError.message));
++    else onSaved();
++  }
++
++  return (
++    <form onSubmit={save} className="bg-white rounded-card-lg shadow-soft p-6 grid grid-cols-1 sm:grid-cols-3 gap-4 print:hidden">
++      <div className="sm:col-span-3 text-sm text-ink-soft">
++        A NIL entry confirms nothing to report for {cfg.label.toLowerCase()} — it proves the log is active and reviewed, which is what an auditor checks for.
++      </div>
++      <label className="block">
++        <span className="block text-xs font-medium text-ink-soft mb-1">Date</span>
++        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} required />
++      </label>
++      <label className="block">
++        <span className="block text-xs font-medium text-ink-soft mb-1">Confirmed by</span>
++        <input value={by} onChange={(e) => setBy(e.target.value)} className={inputCls} required />
++      </label>
++      <label className="block">
++        <span className="block text-xs font-medium text-ink-soft mb-1">Note (optional)</span>
++        <input value={note} onChange={(e) => setNote(e.target.value)} className={inputCls} />
++      </label>
++      <div className="sm:col-span-3 flex gap-2 justify-end items-center">
++        {error && <span className="text-red-bright text-sm mr-auto">{error}</span>}
++        <button type="button" onClick={onClose} className="px-4 py-2 rounded-card text-sm text-ink-soft hover:bg-cream-deep">
++          Cancel
++        </button>
++        <button type="submit" disabled={saving} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium disabled:opacity-60">
++          {saving ? "Saving…" : "Log NIL entry"}
++        </button>
++      </div>
++    </form>
++  );
++}
+diff --git a/app/dashboard/qc/components/QcTable.tsx b/app/dashboard/qc/components/QcTable.tsx
+new file mode 100644
+index 0000000..63733fb
+--- /dev/null
++++ b/app/dashboard/qc/components/QcTable.tsx
+@@ -0,0 +1,79 @@
++import type { ReactNode } from "react";
++import { columnsFor, fmtDate, str, RECORD_TYPE_MAP } from "@/lib/qc/config";
++import type { QcRecord } from "@/lib/qc/queries";
++
++/**
++ * One table used for both the on-screen log and the printed monthly report,
++ * so what's printed is exactly what's stored. Flagged rows are tinted and
++ * carry the reason; open complaints/CAPAs are marked OPEN.
++ */
++export default function QcTable({
++  typeKey,
++  records,
++  print = false,
++  renderActions,
++}: {
++  typeKey: string;
++  records: QcRecord[];
++  print?: boolean;
++  renderActions?: (r: QcRecord) => ReactNode;
++}) {
++  const cfg = RECORD_TYPE_MAP[typeKey];
++  if (!cfg) return null;
++  const columns = columnsFor(cfg);
++  const span = columns.length + 1 + (renderActions ? 1 : 0);
++
++  const cell = print ? "border border-gray-400 px-1.5 py-1 align-top text-[10px] leading-tight" : "px-3 py-2 align-top";
++  const head = print
++    ? "border border-gray-400 bg-gray-200 px-1.5 py-1 text-left text-[10px] font-semibold"
++    : "px-3 py-3 font-medium text-left whitespace-nowrap";
++
++  return (
++    <table className={`w-full ${print ? "border-collapse" : "text-sm"}`}>
++      <thead>
++        <tr className={print ? "" : "bg-cream-deep text-ink-soft"}>
++          {columns.map((c) => (
++            <th key={c.label} className={head}>
++              {c.label}
++            </th>
++          ))}
++          <th className={head}>Flags / Status</th>
++          {renderActions && <th className={head} />}
++        </tr>
++      </thead>
++      <tbody>
++        {records.map((r) => {
++          const tint = r.is_flagged ? (print ? "bg-red-50" : "bg-red-50/70") : "";
++          const rowStyle = print ? { WebkitPrintColorAdjust: "exact" as const, printColorAdjust: "exact" as const } : undefined;
++          if (r.is_nil) {
++            return (
++              <tr key={r.id} className={print ? "" : "border-t border-cream-deep"} style={rowStyle}>
++                <td className={cell}>{fmtDate(r.record_date)}</td>
++                <td className={`${cell} italic`} colSpan={span - 1 - (renderActions ? 1 : 0)}>
++                  NIL — no incidents / entries this period.{str(r.data, "note") ? ` ${str(r.data, "note")}` : ""}
++                  {str(r.data, "logged_by") ? ` (${str(r.data, "logged_by")})` : ""}
++                </td>
++                {renderActions && <td className={cell}>{renderActions(r)}</td>}
++              </tr>
++            );
++          }
++          return (
++            <tr key={r.id} className={`${print ? "" : "border-t border-cream-deep"} ${tint}`} style={rowStyle}>
++              {columns.map((c) => (
++                <td key={c.label} className={cell}>
++                  {c.render(r.data)}
++                </td>
++              ))}
++              <td className={cell}>
++                {r.is_flagged && <div className="font-semibold text-red-bright">⚑ {r.flag_reason}</div>}
++                {r.is_open && <div className="font-semibold text-gold-dark">OPEN</div>}
++                {!r.is_flagged && !r.is_open && <span className="text-ink-soft">OK</span>}
++              </td>
++              {renderActions && <td className={`${cell} whitespace-nowrap`}>{renderActions(r)}</td>}
++            </tr>
++          );
++        })}
++      </tbody>
++    </table>
++  );
++}
+diff --git a/app/dashboard/qc/components/ReviewSignoff.tsx b/app/dashboard/qc/components/ReviewSignoff.tsx
+new file mode 100644
+index 0000000..6d8a167
+--- /dev/null
++++ b/app/dashboard/qc/components/ReviewSignoff.tsx
+@@ -0,0 +1,67 @@
++"use client";
++
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++import { createClient } from "@/lib/supabase/client";
++import { fmtDate } from "@/lib/qc/config";
++import type { QcReview } from "@/lib/qc/queries";
++
++/** Supervisor month-end sign-off for one log — HACCP "verification". Prints on the monthly report. */
++export default function ReviewSignoff({
++  typeKey,
++  month,
++  reviewerName,
++  review,
++}: {
++  typeKey: string;
++  month: string;
++  reviewerName: string;
++  review: QcReview | null;
++}) {
++  const router = useRouter();
++  const supabase = createClient();
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  async function sign() {
++    setSaving(true);
++    setError(null);
++    const { error } = await supabase
++      .from("QC_REVIEWS")
++      .upsert({ review_month: `${month}-01`, record_type: typeKey, reviewed_by: reviewerName, reviewed_at: new Date().toISOString() }, { onConflict: "review_month,record_type" });
++    setSaving(false);
++    if (error) setError(error.message);
++    else router.refresh();
++  }
++
++  async function unsign() {
++    if (!confirm("Remove this month's supervisor review?")) return;
++    setSaving(true);
++    const { error } = await supabase.from("QC_REVIEWS").delete().eq("review_month", `${month}-01`).eq("record_type", typeKey);
++    setSaving(false);
++    if (error) setError(error.message);
++    else router.refresh();
++  }
++
++  return (
++    <div className="bg-white rounded-card-lg shadow-soft px-5 py-3 flex flex-wrap items-center gap-3 text-sm">
++      {review ? (
++        <>
++          <span className="text-green-700 font-medium">✔ Reviewed by {review.reviewed_by}</span>
++          <span className="text-ink-soft">on {fmtDate(review.reviewed_at.slice(0, 10))}</span>
++          <button onClick={unsign} disabled={saving} className="ml-auto text-xs text-ink-soft hover:text-red-bright underline">
++            Remove review
++          </button>
++        </>
++      ) : (
++        <>
++          <span className="text-ink-soft">Supervisor review for this month not yet signed.</span>
++          <button onClick={sign} disabled={saving} className="ml-auto bg-gold hover:bg-gold-dark text-maroon rounded-card px-4 py-1.5 text-sm font-medium disabled:opacity-60">
++            {saving ? "Saving…" : `Mark reviewed as ${reviewerName}`}
++          </button>
++        </>
++      )}
++      {error && <span className="basis-full text-red-bright text-xs">{error}</span>}
++    </div>
++  );
++}
+diff --git a/app/dashboard/qc/haccp/page.tsx b/app/dashboard/qc/haccp/page.tsx
+new file mode 100644
+index 0000000..6f7d5d1
+--- /dev/null
++++ b/app/dashboard/qc/haccp/page.tsx
+@@ -0,0 +1,137 @@
++import Link from "next/link";
++import { requireOwner } from "@/lib/requireOwner";
++import { HACCP_PLAN, RECORD_TYPE_MAP } from "@/lib/qc/config";
++import PrintButton from "../components/PrintButton";
++
++export const dynamic = "force-dynamic";
++
++export default async function HaccpPlanPage() {
++  await requireOwner();
++  const th = "px-3 py-2 text-left font-medium";
++  const td = "px-3 py-2 align-top border-t border-cream-deep";
++
++  return (
++    <div className="space-y-6">
++      <style>{`@media print{@page{size:A4 landscape;margin:12mm}}`}</style>
++      <div className="flex flex-wrap items-start justify-between gap-4">
++        <div>
++          <Link href="/dashboard/qc" className="text-xs text-ink-soft hover:text-maroon print:hidden">
++            ← Quality & HACCP
++          </Link>
++          <h1 className="text-2xl font-semibold text-maroon mt-1">HACCP-Based Food Safety Plan</h1>
++          <p className="text-ink-soft text-sm">SpiseUp Africa · Betarlux Skincare Innovation Hub / Riaor Industries Ltd — Kitengela, Kajiado County</p>
++        </div>
++        <PrintButton />
++      </div>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6">
++        <h2 className="text-lg font-medium text-ink mb-3">Product description</h2>
++        <table className="w-full text-sm">
++          <tbody>
++            {HACCP_PLAN.product.map(([k, v]) => (
++              <tr key={k}>
++                <td className={`${td} font-medium w-48 first:border-t-0`}>{k}</td>
++                <td className={td}>{v}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </section>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6">
++        <h2 className="text-lg font-medium text-ink mb-3">Process flow</h2>
++        <ol className="list-decimal pl-5 space-y-1 text-sm">
++          {HACCP_PLAN.processFlow.map((s) => (
++            <li key={s}>{s}</li>
++          ))}
++        </ol>
++      </section>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6 overflow-x-auto">
++        <h2 className="text-lg font-medium text-ink mb-3">Hazard analysis</h2>
++        <table className="w-full text-sm">
++          <thead>
++            <tr className="bg-cream-deep text-ink-soft">
++              {["Process step", "Biological hazard", "Chemical hazard", "Physical hazard"].map((h) => (
++                <th key={h} className={th}>
++                  {h}
++                </th>
++              ))}
++            </tr>
++          </thead>
++          <tbody>
++            {HACCP_PLAN.hazards.map((row) => (
++              <tr key={row[0]}>
++                {row.map((c, i) => (
++                  <td key={i} className={`${td} ${i === 0 ? "font-medium" : ""}`}>
++                    {c}
++                  </td>
++                ))}
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </section>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6 overflow-x-auto">
++        <h2 className="text-lg font-medium text-ink mb-1">Critical Control Points</h2>
++        <p className="text-xs text-ink-soft mb-3">
++          Critical limits are enforced automatically in the app: a moisture reading above the limit forces the In-Process result to Fail, and a foreign body / metal detection forces the Final QC result to Fail. Edit limits in <code>lib/qc/config.ts</code>.
++        </p>
++        <table className="w-full text-sm">
++          <thead>
++            <tr className="bg-cream-deep text-ink-soft">
++              {["CCP", "Step", "Hazard controlled", "Critical limit", "Monitoring", "Corrective action", "Verification"].map((h) => (
++                <th key={h} className={th}>
++                  {h}
++                </th>
++              ))}
++            </tr>
++          </thead>
++          <tbody>
++            {HACCP_PLAN.ccps.map((c) => (
++              <tr key={c.id}>
++                <td className={`${td} font-semibold text-maroon`}>{c.id}</td>
++                <td className={td}>{c.step}</td>
++                <td className={td}>{c.hazard}</td>
++                <td className={td}>{c.limit}</td>
++                <td className={td}>
++                  {c.monitoring}{" "}
++                  <Link href={`/dashboard/qc/${c.recordType}`} className="text-maroon hover:underline print:hidden">
++                    → open log
++                  </Link>
++                </td>
++                <td className={td}>{c.corrective}</td>
++                <td className={td}>{c.verification}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </section>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6">
++        <h2 className="text-lg font-medium text-ink mb-3">Prerequisite programmes</h2>
++        <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm">
++          {HACCP_PLAN.prps.map(([label, type]) => (
++            <li key={type}>
++              •{" "}
++              <Link href={`/dashboard/qc/${type}`} className="hover:underline hover:text-maroon">
++                {label}
++              </Link>{" "}
++              <span className="text-ink-soft text-xs">({RECORD_TYPE_MAP[type]?.frequency})</span>
++            </li>
++          ))}
++        </ul>
++      </section>
++
++      <section className="bg-white rounded-card-lg shadow-soft p-6">
++        <h2 className="text-lg font-medium text-ink mb-3">Verification & review</h2>
++        <ul className="list-disc pl-5 space-y-1 text-sm">
++          {HACCP_PLAN.verification.map((v) => (
++            <li key={v}>{v}</li>
++          ))}
++        </ul>
++      </section>
++    </div>
++  );
++}
+diff --git a/app/dashboard/qc/page.tsx b/app/dashboard/qc/page.tsx
+new file mode 100644
+index 0000000..dc0e9ed
+--- /dev/null
++++ b/app/dashboard/qc/page.tsx
+@@ -0,0 +1,198 @@
++import Link from "next/link";
++import { createClient } from "@/lib/supabase/server";
++import { requireOwner } from "@/lib/requireOwner";
++import { GROUPS, RECORD_TYPES, RECORD_TYPE_MAP, fmtDate } from "@/lib/qc/config";
++import { ccpSummary, currentMonth, fetchDueItems, fetchQcRecords, isValidMonth, monthLabel, monthRange, todayNairobi } from "@/lib/qc/queries";
++import MonthPicker from "./components/MonthPicker";
++
++export const dynamic = "force-dynamic";
++
++export default async function QcHubPage({ searchParams }: { searchParams: { month?: string } }) {
++  await requireOwner();
++  const supabase = createClient();
++
++  const month = isValidMonth(searchParams.month) ? searchParams.month : currentMonth();
++  const { from, to } = monthRange(month);
++  const today = todayNairobi();
++
++  // Probe first so a missing migration shows a clear setup message instead of an empty page
++  const probe = await supabase.from("QC_RECORDS").select("id", { head: true, count: "exact" });
++  if (probe.error) {
++    return (
++      <div className="space-y-4">
++        <h1 className="text-2xl font-semibold text-maroon">Quality & HACCP</h1>
++        <div className="bg-gold/10 border border-gold/30 rounded-card-lg p-5 text-sm text-ink-soft space-y-2">
++          <div className="font-medium text-ink">One-time setup needed</div>
++          <p>
++            The QC tables aren&apos;t in the database yet. Open the Supabase SQL editor and run{" "}
++            <code className="bg-white px-1 rounded">supabase/qc_schema.sql</code>, then refresh this page.
++          </p>
++          <p className="text-xs">({probe.error.message})</p>
++        </div>
++      </div>
++    );
++  }
++
++  const [records, due, openRes, lastEntries] = await Promise.all([
++    fetchQcRecords(supabase, { from, to }),
++    fetchDueItems(supabase, today),
++    supabase.from("QC_RECORDS").select("id, record_type, record_date, data").eq("is_open", true).order("record_date"),
++    Promise.all(
++      RECORD_TYPES.map((t) =>
++        supabase.from("QC_RECORDS").select("record_date").eq("record_type", t.key).order("record_date", { ascending: false }).limit(1)
++      )
++    ),
++  ]);
++
++  const openItems = openRes.data ?? [];
++  const lastByType = new Map(RECORD_TYPES.map((t, i) => [t.key, lastEntries[i].data?.[0]?.record_date as string | undefined]));
++
++  const stats = new Map<string, { count: number; flagged: number }>();
++  for (const r of records) {
++    const s = stats.get(r.record_type) ?? { count: 0, flagged: 0 };
++    s.count += 1;
++    if (r.is_flagged) s.flagged += 1;
++    stats.set(r.record_type, s);
++  }
++  const totalFlagged = records.filter((r) => r.is_flagged).length;
++  const ccps = ccpSummary(records);
++  const emptyTypes = RECORD_TYPES.filter((t) => !stats.get(t.key));
++  const overdue = due.filter((d) => d.daysUntil < 0);
++
++  const daysSince = (d?: string) => (d ? Math.round((new Date(`${today}T00:00:00Z`).getTime() - new Date(`${d}T00:00:00Z`).getTime()) / 86400000) : null);
++
++  return (
++    <div className="space-y-6">
++      <div className="flex flex-wrap items-start justify-between gap-4">
++        <div>
++          <h1 className="text-2xl font-semibold text-maroon">Quality & HACCP</h1>
++          <p className="text-ink-soft text-sm">Food safety records for {monthLabel(month)} — everything logged here feeds the database and the monthly report</p>
++        </div>
++        <div className="flex flex-wrap items-center gap-2">
++          <MonthPicker basePath="/dashboard/qc" month={month} />
++          <Link href={`/dashboard/qc/report?month=${month}`} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium transition-colors">
++            📄 Monthly report
++          </Link>
++          <Link href="/dashboard/qc/haccp" className="bg-white shadow-soft hover:bg-cream-deep text-maroon rounded-card px-4 py-2 text-sm font-medium">
++            HACCP plan
++          </Link>
++        </div>
++      </div>
++
++      {/* CCP monitoring */}
++      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
++        {ccps.map((c) => {
++          const cfgCcp = c.id === "CCP-1" ? { title: "CCP-1 · Drying moisture", note: "Limit ≤ 11%", type: "in_process_qc" } : { title: "CCP-2 · Foreign body / metal", note: "Zero detectable", type: "final_product_qc" };
++          const bad = c.breaches > 0;
++          return (
++            <Link key={c.id} href={`/dashboard/qc/${cfgCcp.type}?month=${month}`} className={`rounded-card-lg shadow-soft p-5 block ${bad ? "bg-red-50" : "bg-white"} hover:shadow-md transition-shadow`}>
++              <div className="text-xs uppercase tracking-wide text-ink-soft">{cfgCcp.note}</div>
++              <div className="font-semibold text-ink">{cfgCcp.title}</div>
++              <div className="mt-2 flex items-baseline gap-4 text-sm">
++                <span>
++                  <span className="text-2xl font-semibold text-maroon">{c.checks}</span> <span className="text-ink-soft">checks</span>
++                </span>
++                <span className={bad ? "text-red-bright font-semibold" : "text-green-700"}>
++                  {bad ? `⚑ ${c.breaches} breach${c.breaches > 1 ? "es" : ""}` : c.checks === 0 ? "No checks logged yet" : "✔ Within limit"}
++                </span>
++              </div>
++            </Link>
++          );
++        })}
++      </div>
++
++      {/* Attention list */}
++      {(overdue.length > 0 || due.length > 0 || openItems.length > 0 || totalFlagged > 0) && (
++        <div className="bg-white rounded-card-lg shadow-soft p-6">
++          <h2 className="text-lg font-medium text-ink mb-3">Needs attention</h2>
++          <ul className="space-y-2 text-sm">
++            {totalFlagged > 0 && (
++              <li className="flex gap-2">
++                <span>⚑</span>
++                <span>
++                  <strong>{totalFlagged}</strong> flagged {totalFlagged === 1 ? "entry" : "entries"} in {monthLabel(month)} — see the amber counts below.
++                </span>
++              </li>
++            )}
++            {openItems.map((o) => {
++              const cfg = RECORD_TYPE_MAP[o.record_type];
++              const d = o.data as Record<string, string>;
++              const summary = d.nature ?? d.description ?? "";
++              return (
++                <li key={o.id} className="flex gap-2">
++                  <span>📂</span>
++                  <span>
++                    <Link href={`/dashboard/qc/${o.record_type}?month=${o.record_date.slice(0, 7)}`} className="text-maroon hover:underline font-medium">
++                      Open {cfg?.label ?? o.record_type}
++                    </Link>{" "}
++                    <span className="text-ink-soft">
++                      — {fmtDate(o.record_date)}
++                      {summary ? `: ${summary.slice(0, 80)}${summary.length > 80 ? "…" : ""}` : ""}
++                    </span>
++                  </span>
++                </li>
++              );
++            })}
++            {due.map((d) => (
++              <li key={`${d.recordType}-${d.label}`} className="flex gap-2">
++                <span>{d.daysUntil < 0 ? "🔴" : "🟡"}</span>
++                <span>
++                  <Link href={`/dashboard/qc/${d.recordType}`} className="text-maroon hover:underline font-medium">
++                    {d.label}
++                  </Link>{" "}
++                  <span className={d.daysUntil < 0 ? "text-red-bright" : "text-ink-soft"}>
++                    — {d.daysUntil < 0 ? `overdue by ${-d.daysUntil} day${d.daysUntil === -1 ? "" : "s"}` : d.daysUntil === 0 ? "due today" : `due in ${d.daysUntil} days`} ({fmtDate(d.dueDate)})
++                  </span>
++                </span>
++              </li>
++            ))}
++          </ul>
++        </div>
++      )}
++
++      {emptyTypes.length > 0 && month === currentMonth() && (
++        <div className="bg-gold/10 border border-gold/30 rounded-card-lg px-5 py-3 text-sm text-ink-soft">
++          <strong className="text-ink">{emptyTypes.length} log{emptyTypes.length > 1 ? "s have" : " has"} no entries this month:</strong>{" "}
++          {emptyTypes.map((t) => t.label).join(", ")}. Log real entries — or a NIL entry where allowed — so the monthly report has no gaps.
++        </div>
++      )}
++
++      {/* Log cards */}
++      {GROUPS.map((g) => (
++        <div key={g.key}>
++          <h2 className="text-lg font-medium text-ink">{g.title}</h2>
++          <p className="text-xs text-ink-soft mb-3">{g.blurb}</p>
++          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
++            {RECORD_TYPES.filter((t) => t.group === g.key).map((t) => {
++              const s = stats.get(t.key);
++              const last = lastByType.get(t.key);
++              const since = daysSince(last);
++              const stale = t.staleDays !== undefined && (since === null || since > t.staleDays);
++              return (
++                <Link key={t.key} href={`/dashboard/qc/${t.key}?month=${month}`} className="bg-white rounded-card-lg shadow-soft p-5 hover:shadow-md transition-shadow block">
++                  <div className="flex items-start justify-between gap-2">
++                    <div className="font-medium text-ink">
++                      {t.icon} {t.label}
++                    </div>
++                    {s && s.flagged > 0 && <span className="text-xs font-semibold bg-red-50 text-red-bright rounded-full px-2 py-0.5 whitespace-nowrap">⚑ {s.flagged}</span>}
++                  </div>
++                  <div className="text-xs text-ink-soft mt-1 line-clamp-2">{t.description}</div>
++                  <div className="mt-3 flex items-baseline justify-between text-sm">
++                    <span>
++                      <span className="text-xl font-semibold text-maroon">{s?.count ?? 0}</span> <span className="text-ink-soft">this month</span>
++                    </span>
++                    <span className={`text-xs ${stale ? "text-red-bright font-medium" : "text-ink-soft"}`}>
++                      {last ? `Last: ${fmtDate(last)}` : "Never logged"}
++                      {stale && last ? " · overdue" : ""}
++                    </span>
++                  </div>
++                  <div className="text-[11px] text-ink-soft mt-1">{t.frequency}</div>
++                </Link>
++              );
++            })}
++          </div>
++        </div>
++      ))}
++    </div>
++  );
++}
+diff --git a/app/dashboard/qc/report/page.tsx b/app/dashboard/qc/report/page.tsx
+new file mode 100644
+index 0000000..2a6c374
+--- /dev/null
++++ b/app/dashboard/qc/report/page.tsx
+@@ -0,0 +1,201 @@
++import Link from "next/link";
++import { createClient } from "@/lib/supabase/server";
++import { requireOwner } from "@/lib/requireOwner";
++import { GROUPS, RECORD_TYPES, fmtDate } from "@/lib/qc/config";
++import { ccpSummary, currentMonth, fetchQcRecords, isValidMonth, monthLabel, monthRange, todayNairobi, type QcRecord, type QcReview } from "@/lib/qc/queries";
++import MonthPicker from "../components/MonthPicker";
++import PrintButton from "../components/PrintButton";
++import QcTable from "../components/QcTable";
++
++export const dynamic = "force-dynamic";
++
++export default async function QcReportPage({ searchParams }: { searchParams: { month?: string } }) {
++  await requireOwner();
++  const supabase = createClient();
++
++  const month = isValidMonth(searchParams.month) ? searchParams.month : currentMonth();
++  const { from, to } = monthRange(month);
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  const [records, reviewsRes, profileRes, openRes] = await Promise.all([
++    fetchQcRecords(supabase, { from, to }),
++    supabase.from("QC_REVIEWS").select("record_type, reviewed_by, reviewed_at, notes").eq("review_month", `${month}-01`),
++    supabase.from("profiles").select("full_name").eq("id", user!.id).single(),
++    // Items still open at print time, even if raised in an earlier month — an auditor will ask
++    supabase.from("QC_RECORDS").select("id, record_type, record_date, data").eq("is_open", true).lt("record_date", from).order("record_date"),
++  ]);
++
++  const byType = new Map<string, QcRecord[]>();
++  for (const r of records) {
++    const list = byType.get(r.record_type) ?? [];
++    list.push(r);
++    byType.set(r.record_type, list);
++  }
++  const reviews = new Map<string, QcReview>((reviewsRes.data ?? []).map((r) => [r.record_type, r as QcReview]));
++  const preparedBy = profileRes.data?.full_name ?? user?.email ?? "";
++  const docNo = `SPU-HACCP-${month}`;
++
++  const real = records.filter((r) => !r.is_nil);
++  const flagged = records.filter((r) => r.is_flagged);
++  const openNow = records.filter((r) => r.is_open);
++  const carriedOpen = openRes.data ?? [];
++  const ccps = ccpSummary(records);
++  const gaps = RECORD_TYPES.filter((t) => !byType.get(t.key)?.length);
++  const reviewed = RECORD_TYPES.filter((t) => reviews.has(t.key)).length;
++
++  const th = "border border-gray-400 bg-gray-100 px-2 py-1 text-left text-[10px] font-semibold";
++  const td = "border border-gray-400 px-2 py-1 text-[10px]";
++
++  return (
++    <div className="space-y-6 print:space-y-4">
++      {/* Landscape A4, tight margins — 10–12 column logs fit on one page width */}
++      <style>{`@media print{@page{size:A4 landscape;margin:10mm}body{background:#fff!important}}`}</style>
++
++      <div className="flex flex-wrap items-start justify-between gap-4 print:hidden">
++        <div>
++          <Link href={`/dashboard/qc?month=${month}`} className="text-xs text-ink-soft hover:text-maroon">
++            ← Quality & HACCP
++          </Link>
++          <h1 className="text-2xl font-semibold text-maroon mt-1">Monthly Food Safety Report</h1>
++          <p className="text-ink-soft text-sm">Every log for the month in one document — use Print, then choose “Save as PDF” to keep a copy.</p>
++        </div>
++        <div className="flex flex-wrap items-center gap-2">
++          <MonthPicker basePath="/dashboard/qc/report" month={month} />
++          <PrintButton />
++        </div>
++      </div>
++
++      {gaps.length > 0 && (
++        <div className="bg-gold/10 border border-gold/30 rounded-card-lg px-5 py-3 text-sm text-ink-soft print:hidden">
++          <strong className="text-ink">{gaps.length} log{gaps.length > 1 ? "s have" : " has"} no entries for {monthLabel(month)}:</strong> {gaps.map((g) => g.label).join(", ")}. They will print as “No entries recorded” — add entries or NIL entries first if that isn’t right.
++        </div>
++      )}
++
++      <article className="bg-white rounded-card-lg shadow-soft p-8 print:shadow-none print:rounded-none print:p-0 space-y-6 print:space-y-4">
++        {/* Header block */}
++        <header>
++          <div className="flex items-start justify-between gap-6">
++            <div>
++              <div className="text-xl font-semibold text-maroon print:text-black">SpiseUp Africa — Monthly Food Safety Record</div>
++              <div className="text-sm text-ink-soft print:text-black">Betarlux Skincare Innovation Hub / Riaor Industries Ltd — Kitengela, Kajiado County</div>
++            </div>
++            <div className="text-right text-xs text-ink-soft print:text-black">HACCP-based records</div>
++          </div>
++          <table className="w-full mt-3 border-collapse">
++            <tbody>
++              <tr>
++                <td className={td}>
++                  <strong>Document No.:</strong> {docNo}
++                </td>
++                <td className={td}>
++                  <strong>Period / Month:</strong> {monthLabel(month)}
++                </td>
++                <td className={td}>
++                  <strong>Prepared By:</strong> {preparedBy}
++                </td>
++                <td className={td}>
++                  <strong>Printed:</strong> {fmtDate(todayNairobi())}
++                </td>
++              </tr>
++            </tbody>
++          </table>
++        </header>
++
++        {/* Summary */}
++        <section>
++          <h2 className="text-sm font-semibold mb-1">Summary</h2>
++          <table className="w-full border-collapse">
++            <tbody>
++              <tr>
++                <td className={td}>
++                  <strong>{real.length}</strong> entries across {RECORD_TYPES.length - gaps.length} of {RECORD_TYPES.length} logs
++                </td>
++                <td className={td}>
++                  <strong>{flagged.length}</strong> flagged {flagged.length === 1 ? "entry" : "entries"}
++                </td>
++                <td className={td}>
++                  <strong>{openNow.length + carriedOpen.length}</strong> open complaint / non-conformance item{openNow.length + carriedOpen.length === 1 ? "" : "s"}
++                  {carriedOpen.length > 0 ? ` (${carriedOpen.length} carried over)` : ""}
++                </td>
++                <td className={td}>
++                  <strong>{reviewed}</strong> of {RECORD_TYPES.length} logs supervisor-reviewed
++                </td>
++              </tr>
++              <tr>
++                {ccps.map((c) => (
++                  <td key={c.id} className={td} colSpan={2}>
++                    <strong>{c.id}</strong>: {c.checks} check{c.checks === 1 ? "" : "s"} —{" "}
++                    {c.checks === 0 ? <span className="font-semibold text-red-bright">none logged</span> : c.breaches > 0 ? <span className="font-semibold text-red-bright">{c.breaches} breach{c.breaches > 1 ? "es" : ""}</span> : "all within critical limit"}
++                  </td>
++                ))}
++              </tr>
++            </tbody>
++          </table>
++          {carriedOpen.length > 0 && (
++            <div className="mt-2 text-[10px]">
++              <strong>Open from earlier months:</strong>{" "}
++              {carriedOpen
++                .map((o) => {
++                  const t = RECORD_TYPES.find((x) => x.key === o.record_type);
++                  return `${t?.label ?? o.record_type} (${fmtDate(o.record_date)})`;
++                })
++                .join("; ")}
++            </div>
++          )}
++        </section>
++
++        {/* One section per log, grouped */}
++        {(() => {
++          let n = 0;
++          return GROUPS.map((g) => (
++            <div key={g.key} className="space-y-6 print:space-y-4">
++              <h2 className="text-base font-semibold text-maroon print:text-black border-b border-gray-300 pb-1 break-before-auto print:break-before-page">{g.title}</h2>
++              {RECORD_TYPES.filter((t) => t.group === g.key).map((t) => {
++                n += 1;
++                const rows = byType.get(t.key) ?? [];
++                const review = reviews.get(t.key);
++                return (
++                  <section key={t.key} className="break-inside-auto">
++                    <div className="flex items-baseline justify-between gap-4 mb-1 print:break-after-avoid">
++                      <h3 className="text-sm font-semibold">
++                        {n}. {t.label}
++                      </h3>
++                      <span className="text-[10px] text-ink-soft print:text-black">{rows.length} {rows.length === 1 ? "entry" : "entries"}</span>
++                    </div>
++                    {rows.length === 0 ? (
++                      <div className="border border-gray-400 px-2 py-2 text-[11px] italic">No entries recorded for {monthLabel(month)}.</div>
++                    ) : (
++                      <div className="overflow-x-auto print:overflow-visible">
++                        <QcTable typeKey={t.key} records={rows} print />
++                      </div>
++                    )}
++                    <table className="w-full border-collapse mt-1 print:break-inside-avoid">
++                      <tbody>
++                        <tr>
++                          <td className={td}>
++                            <strong>Supervisor review:</strong>{" "}
++                            {review ? `${review.reviewed_by} — ${fmtDate(review.reviewed_at.slice(0, 10))}` : <span className="text-transparent select-none">________________________</span>}
++                          </td>
++                          <td className={`${td} w-1/3`}>
++                            <strong>Signature:</strong>
++                          </td>
++                        </tr>
++                      </tbody>
++                    </table>
++                  </section>
++                );
++              })}
++            </div>
++          ));
++        })()}
++
++        <footer className="pt-2 text-[10px] text-ink-soft print:text-black border-t border-gray-300">
++          {docNo} · {monthLabel(month)} · Generated from PennyPal on {fmtDate(todayNairobi())}. Flagged entries (⚑) breached a limit or recorded an issue; each carries its corrective action in the log above.
++        </footer>
++      </article>
++    </div>
++  );
++}
+diff --git a/components/Sidebar.tsx b/components/Sidebar.tsx
+index bf830d2..2c05364 100644
+--- a/components/Sidebar.tsx
++++ b/components/Sidebar.tsx
+@@ -12,6 +12,7 @@ const OWNER_ONLY = new Set([
+   "/dashboard/messaging",
+   "/dashboard/team",
+   "/dashboard/analytics",
++  "/dashboard/qc",
+ ]);
+ 
+ const NAV = [
+@@ -21,6 +22,7 @@ const NAV = [
+   { href: "/dashboard/expenses", label: "Expenses", icon: "🧾" },
+   { href: "/dashboard/distribution", label: "Distribution", icon: "🚚" },
+   { href: "/dashboard/inventory", label: "Inventory & Production", icon: "📦" },
++  { href: "/dashboard/qc", label: "Quality & HACCP", icon: "🧪" },
+   { href: "/dashboard/commissions", label: "Commissions", icon: "🤝" },
+   { href: "/dashboard/messaging", label: "Customer Messaging", icon: "📱" },
+   { href: "/dashboard/assets", label: "Assets & Funding", icon: "🏷️" },
+@@ -79,7 +81,7 @@ export default function Sidebar({ role, name }: { role: string; name: string })
+ 
+         <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
+           {items.map((item) => {
+-            const active = pathname === item.href;
++            const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
+             return (
+               <Link
+                 key={item.href}
+@@ -116,7 +118,7 @@ export default function Sidebar({ role, name }: { role: string; name: string })
+     <>
+       {/* Mobile top bar — only visible below md breakpoint. Fixed so it
+           stays put while the page content scrolls underneath it. */}
+-      <div className="md:hidden fixed top-0 left-0 right-0 z-30 bg-maroon text-cream flex items-center justify-between px-4 py-3 shadow-soft">
++      <div className="md:hidden print:hidden fixed top-0 left-0 right-0 z-30 bg-maroon text-cream flex items-center justify-between px-4 py-3 shadow-soft">
+         <button onClick={() => setMobileOpen(true)} className="text-xl" aria-label="Open menu">
+           ☰
+         </button>
+@@ -127,13 +129,13 @@ export default function Sidebar({ role, name }: { role: string; name: string })
+       {/* Backdrop — tapping it closes the drawer, same as tapping outside
+           any mobile menu */}
+       {mobileOpen && (
+-        <div className="md:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMobileOpen(false)} />
++        <div className="md:hidden print:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMobileOpen(false)} />
+       )}
+ 
+       {/* Mobile drawer — always shows full labels, collapsing doesn't make
+           sense on a phone where the drawer isn't taking up permanent space */}
+       <aside
+-        className={`md:hidden fixed top-0 left-0 bottom-0 w-72 z-50 bg-gradient-to-b from-maroon to-red text-cream flex flex-col transition-transform duration-200 ${
++        className={`md:hidden print:hidden fixed top-0 left-0 bottom-0 w-72 z-50 bg-gradient-to-b from-maroon to-red text-cream flex flex-col transition-transform duration-200 ${
+           mobileOpen ? "translate-x-0" : "-translate-x-full"
+         }`}
+       >
+@@ -144,7 +146,7 @@ export default function Sidebar({ role, name }: { role: string; name: string })
+           (w-16). The toggle button sits on the edge, same pattern as most
+           admin dashboards. */}
+       <aside
+-        className={`hidden md:flex shrink-0 bg-gradient-to-b from-maroon to-red text-cream flex-col relative transition-all duration-200 ${
++        className={`hidden md:flex print:!hidden shrink-0 bg-gradient-to-b from-maroon to-red text-cream flex-col relative transition-all duration-200 ${
+           collapsed ? "w-16" : "w-64"
+         }`}
+       >
+diff --git a/lib/qc/config.ts b/lib/qc/config.ts
+new file mode 100644
+index 0000000..459b3f6
+--- /dev/null
++++ b/lib/qc/config.ts
+@@ -0,0 +1,703 @@
++/**
++ * Quality Control & HACCP — record type definitions.
++ *
++ * Every tab of the SpiseUp HACCP workbook is one entry in RECORD_TYPES. The
++ * forms, tables, monthly print report, flagging and due-date alerts are all
++ * generated from these definitions, so adding a new QC check later means
++ * adding one object here — no new page, no new table, no migration.
++ *
++ * Limits below come from the HACCP Plan (CCP-1 moisture ≤ 11%) or are common
++ * dry-spice food-safety values. Adjust them here once you've confirmed them
++ * against your own shelf-life / stability data.
++ */
++
++export const CCP_MOISTURE_LIMIT = 11; // % — CCP-1 critical limit (HACCP Plan §5)
++export const WATER_ACTIVITY_MAX = 0.6; // Aw — below 0.6 microbial growth stops
++export const STORAGE_HUMIDITY_MAX = 65; // % RH for dry ambient stores
++export const STORAGE_TEMP_MAX_C = 30; // °C
++export const DUE_SOON_DAYS = 14; // "due soon" window for calibration/audits/etc.
++
++export type Data = Record<string, string | number>;
++
++export type FieldType = "text" | "textarea" | "date" | "time" | "number" | "select";
++
++export type Field = {
++  key: string;
++  label: string;
++  type: FieldType;
++  options?: string[];
++  required?: boolean;
++  /** Autocomplete source: known batches / raw materials / finished products, or this field's own past values. */
++  suggest?: "batches" | "materials" | "products" | "history";
++  default?: string; // literal value, or "today" / "now"
++  placeholder?: string;
++  step?: string;
++  full?: boolean; // span the full form width
++  /** Keeps its value after "Save & add another" (dates, verifier names — same for a whole round of checks). */
++  sticky?: boolean;
++  /** Pre-fill this date field from the selected batch's production date. */
++  fromBatchDate?: boolean;
++};
++
++export type Column = { label: string; render: (d: Data) => string };
++
++export type GroupKey = "ccp" | "prp" | "issues";
++
++export type CcpId = "CCP-1" | "CCP-2";
++
++export type RecordTypeConfig = {
++  key: string;
++  label: string;
++  icon: string;
++  group: GroupKey;
++  description: string;
++  frequency: string;
++  /** Which field is the record's date (becomes the indexed record_date column). */
++  dateKey: string;
++  batchKey?: string;
++  /** Closable records: open until this date field is filled in. */
++  closeKey?: string;
++  /** Field holding the Pass/Fail/Accepted/Rejected decision. */
++  resultKey?: string;
++  failValues?: string[];
++  /** If a limit is breached, force the result field to failValues[0] (used for CCP checks). */
++  autoFail?: boolean;
++  /** When a record is flagged, this field must explain what was done about it. */
++  correctiveKey?: string;
++  nilAllowed?: boolean;
++  /** Flag on the hub if nothing has been logged for this many days (daily logs). */
++  staleDays?: number;
++  /** Recurring due-date tracking — latest record per `groupKey` is checked against `key`. */
++  due?: { key: string; groupKey: string; noun: string };
++  fields: Field[];
++  columns?: Column[];
++  /** Automatic limit checks → list of human-readable breaches. */
++  check?: (d: Data) => string[];
++  /** Extra validation on save → error message or null. */
++  validate?: (d: Data) => string | null;
++  ccpTag?: (d: Data) => CcpId | null;
++};
++
++// ---------------------------------------------------------------- helpers
++
++export const str = (d: Data, k: string) => (d[k] === undefined || d[k] === null ? "" : String(d[k]).trim());
++export const num = (d: Data, k: string): number | null => {
++  const v = str(d, k);
++  if (v === "") return null;
++  const n = Number(v);
++  return Number.isFinite(n) ? n : null;
++};
++
++const YN = ["Y", "N"];
++
++const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
++
++/** 2026-09-05 → 05-Sep-2026 (same as the paper workbook). Locale-independent so print output never varies by browser. */
++export function fmtDate(s: string | null | undefined): string {
++  if (!s) return "—";
++  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
++  if (!m) return s;
++  return `${m[3]}-${MONTHS[Number(m[2]) - 1] ?? m[2]}-${m[1]}`;
++}
++
++export function fmtValue(f: Field, d: Data): string {
++  const v = str(d, f.key);
++  if (v === "") return "—";
++  if (f.type === "date") return fmtDate(v);
++  return v;
++}
++
++export function defaultColumns(cfg: RecordTypeConfig): Column[] {
++  return cfg.fields.map((f) => ({ label: f.label, render: (d) => fmtValue(f, d) }));
++}
++
++export function columnsFor(cfg: RecordTypeConfig): Column[] {
++  return cfg.columns ?? defaultColumns(cfg);
++}
++
++// ------------------------------------------------------------ record types
++
++export const RECORD_TYPES: RecordTypeConfig[] = [
++  // ---------------------------------------------------------------- CCP & product QC
++  {
++    key: "raw_material_qc",
++    label: "Raw Material QC",
++    icon: "🌶️",
++    group: "ccp",
++    description: "Incoming inspection of chili, salt and other raw materials before acceptance into stock.",
++    frequency: "Every delivery",
++    dateKey: "date_received",
++    resultKey: "decision",
++    failValues: ["Rejected", "Held"],
++    correctiveKey: "remarks",
++    fields: [
++      { key: "date_received", label: "Date Received", type: "date", default: "today", required: true, sticky: true },
++      { key: "material", label: "Material", type: "text", suggest: "materials", required: true, placeholder: "Dried chili" },
++      { key: "supplier", label: "Supplier", type: "text", suggest: "history", required: true },
++      { key: "lot_no", label: "Batch / Lot No.", type: "text", required: true, placeholder: "CHL-0903" },
++      { key: "qty_received", label: "Qty Received", type: "text", required: true, placeholder: "50 kg" },
++      {
++        key: "visual_inspection",
++        label: "Visual Inspection",
++        type: "select",
++        required: true,
++        default: "Pass — no mould/foreign matter",
++        options: ["Pass — no mould/foreign matter", "Fail — mould", "Fail — foreign matter", "Fail — other"],
++      },
++      { key: "moisture_pct", label: "Moisture (%)", type: "number", step: "0.1", placeholder: `spec < ${CCP_MOISTURE_LIMIT}` },
++      { key: "quality_notes", label: "Other quality test notes", type: "text" },
++      { key: "decision", label: "Accepted / Rejected", type: "select", required: true, default: "Accepted", options: ["Accepted", "Held", "Rejected"] },
++      { key: "inspected_by", label: "Inspected By", type: "text", suggest: "history", required: true, sticky: true },
++      { key: "remarks", label: "Remarks", type: "textarea", full: true },
++    ],
++    columns: [
++      { label: "Date Received", render: (d) => fmtDate(str(d, "date_received")) },
++      { label: "Material", render: (d) => str(d, "material") || "—" },
++      { label: "Supplier", render: (d) => str(d, "supplier") || "—" },
++      { label: "Batch / Lot No.", render: (d) => str(d, "lot_no") || "—" },
++      { label: "Qty Received", render: (d) => str(d, "qty_received") || "—" },
++      { label: "Visual Inspection", render: (d) => str(d, "visual_inspection") || "—" },
++      {
++        label: "Moisture / Quality Test Result",
++        render: (d) => [num(d, "moisture_pct") !== null ? `Moisture ${str(d, "moisture_pct")}%` : "", str(d, "quality_notes")].filter(Boolean).join(" · ") || "—",
++      },
++      { label: "Accepted / Rejected", render: (d) => str(d, "decision") || "—" },
++      { label: "Inspected By", render: (d) => str(d, "inspected_by") || "—" },
++      { label: "Remarks", render: (d) => str(d, "remarks") || "—" },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      if (str(d, "visual_inspection").startsWith("Fail")) out.push("Visual inspection failed");
++      const m = num(d, "moisture_pct");
++      if (m !== null && m > CCP_MOISTURE_LIMIT) out.push(`Moisture ${m}% is above the ${CCP_MOISTURE_LIMIT}% limit`);
++      return out;
++    },
++  },
++  {
++    key: "production_log",
++    label: "Production Log",
++    icon: "🏭",
++    group: "ccp",
++    description: "Each production run: what was made, from which raw material lots, by whom.",
++    frequency: "Every production run",
++    dateKey: "date",
++    batchKey: "batch_number",
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "batch_number", label: "Batch No.", type: "text", suggest: "batches", required: true, placeholder: "SPU-0905A" },
++      { key: "product", label: "Product", type: "text", suggest: "products", required: true },
++      { key: "raw_material_lots", label: "Raw Material Lot(s) Used", type: "text", required: true, placeholder: "CHL-0903 / SLT-0810" },
++      { key: "qty_produced", label: "Qty Produced", type: "text", required: true, placeholder: "300 units" },
++      { key: "start_time", label: "Start Time", type: "time" },
++      { key: "end_time", label: "End Time", type: "time" },
++      { key: "operator", label: "Operator", type: "text", suggest: "history", required: true },
++      { key: "supervisor_signoff", label: "Supervisor Sign-off", type: "text", suggest: "history", sticky: true },
++      { key: "remarks", label: "Remarks", type: "textarea", full: true },
++    ],
++  },
++  {
++    key: "in_process_qc",
++    label: "In-Process QC",
++    icon: "🔬",
++    group: "ccp",
++    description: "Checks taken during production — moisture, weight, seasoning ratio — at each process stage. Drying moisture is CCP-1.",
++    frequency: "Every batch, each stage",
++    dateKey: "date",
++    batchKey: "batch_number",
++    resultKey: "result",
++    failValues: ["Fail"],
++    autoFail: true,
++    correctiveKey: "corrective_action",
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "batch_number", label: "Batch No.", type: "text", suggest: "batches", required: true, sticky: true },
++      {
++        key: "stage",
++        label: "Process Stage",
++        type: "select",
++        required: true,
++        options: ["Weighing & mixing", "Drying", "Grinding / blending", "Packaging & sealing"],
++      },
++      {
++        key: "parameter",
++        label: "Parameter Checked",
++        type: "select",
++        required: true,
++        options: ["Moisture content", "Net weight", "Seasoning ratio", "Drying temperature", "Other"],
++      },
++      { key: "target_spec", label: "Target Spec", type: "text", required: true, placeholder: `< ${CCP_MOISTURE_LIMIT}%` },
++      { key: "actual_reading", label: "Actual Reading", type: "number", step: "any", required: true, placeholder: "10.2" },
++      { key: "result", label: "Pass / Fail", type: "select", required: true, default: "Pass", options: ["Pass", "Fail"] },
++      { key: "checked_by", label: "Checked By", type: "text", suggest: "history", required: true, sticky: true },
++      { key: "corrective_action", label: "Corrective Action", type: "textarea", full: true, placeholder: "Required if the check fails — e.g. re-dry batch, hold and re-test" },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      const r = num(d, "actual_reading");
++      if (str(d, "parameter") === "Moisture content" && r !== null && r > CCP_MOISTURE_LIMIT) {
++        out.push(`Moisture ${r}% breaches the CCP-1 critical limit of ${CCP_MOISTURE_LIMIT}% — re-dry, hold and re-test; do not release`);
++      }
++      return out;
++    },
++    ccpTag: (d) => (str(d, "stage") === "Drying" && str(d, "parameter") === "Moisture content" ? "CCP-1" : null),
++  },
++  {
++    key: "final_product_qc",
++    label: "Final Product QC",
++    icon: "✅",
++    group: "ccp",
++    description: "Release check on finished, packaged goods before dispatch. Foreign body / metal check is CCP-2.",
++    frequency: "Every batch",
++    dateKey: "date",
++    batchKey: "batch_number",
++    resultKey: "result",
++    failValues: ["Fail"],
++    autoFail: true,
++    correctiveKey: "corrective_action",
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "batch_number", label: "Batch No.", type: "text", suggest: "batches", required: true },
++      { key: "product", label: "Product", type: "text", suggest: "products", required: true },
++      { key: "target_g", label: "Target Net Weight (g)", type: "number", step: "any", default: "100", required: true },
++      { key: "tolerance_g", label: "Tolerance ± (g)", type: "number", step: "any", default: "2", required: true },
++      { key: "actual_g", label: "Actual Net Weight (g)", type: "number", step: "any", required: true },
++      { key: "moisture_pct", label: "Moisture (%)", type: "number", step: "0.1", required: true, placeholder: `≤ ${CCP_MOISTURE_LIMIT}` },
++      { key: "water_activity", label: "Water Activity (Aw)", type: "number", step: "0.01", placeholder: `≤ ${WATER_ACTIVITY_MAX}` },
++      { key: "sensory", label: "Sensory (Taste/Colour/Aroma)", type: "select", required: true, default: "Normal", options: ["Normal", "Abnormal"] },
++      { key: "seal", label: "Packaging & Seal Check", type: "select", required: true, default: "Seal intact", options: ["Seal intact", "Seal defective"] },
++      { key: "label_check", label: "Label Check", type: "select", required: true, default: "Batch code + BBE correct", options: ["Batch code + BBE correct", "Label incorrect"] },
++      {
++        key: "foreign_body",
++        label: "Foreign Body / Metal Check (CCP-2)",
++        type: "select",
++        required: true,
++        default: "Clear — none detected",
++        options: ["Clear — none detected", "Detected"],
++      },
++      { key: "foreign_body_method", label: "CCP-2 Method", type: "select", default: "Sieve / visual", options: ["Sieve / visual", "Metal detector"] },
++      { key: "result", label: "Pass / Fail", type: "select", required: true, default: "Pass", options: ["Pass", "Fail"] },
++      { key: "released_by", label: "Released By", type: "text", suggest: "history", required: true, sticky: true },
++      { key: "corrective_action", label: "Corrective Action / Remarks", type: "textarea", full: true, placeholder: "Required if the batch fails — segregate, re-check, investigate equipment wear" },
++    ],
++    columns: [
++      { label: "Date", render: (d) => fmtDate(str(d, "date")) },
++      { label: "Batch No.", render: (d) => str(d, "batch_number") || "—" },
++      { label: "Product", render: (d) => str(d, "product") || "—" },
++      {
++        label: "Net Weight Check",
++        render: (d) => (str(d, "actual_g") ? `${str(d, "actual_g")}g (target ${str(d, "target_g")}g ± ${str(d, "tolerance_g")}g)` : "—"),
++      },
++      {
++        label: "Moisture / Water Activity",
++        render: (d) => `${str(d, "moisture_pct") ? str(d, "moisture_pct") + "%" : "—"} / ${str(d, "water_activity") ? "Aw " + str(d, "water_activity") : "—"}`,
++      },
++      { label: "Sensory", render: (d) => str(d, "sensory") || "—" },
++      { label: "Packaging & Seal", render: (d) => str(d, "seal") || "—" },
++      { label: "Label Check", render: (d) => str(d, "label_check") || "—" },
++      {
++        label: "Foreign Body / Metal (CCP-2)",
++        render: (d) => [str(d, "foreign_body"), str(d, "foreign_body_method") && `(${str(d, "foreign_body_method")})`].filter(Boolean).join(" ") || "—",
++      },
++      { label: "Pass / Fail", render: (d) => str(d, "result") || "—" },
++      { label: "Released By", render: (d) => str(d, "released_by") || "—" },
++      { label: "Corrective Action / Remarks", render: (d) => str(d, "corrective_action") || "—" },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      const actual = num(d, "actual_g");
++      const target = num(d, "target_g");
++      const tol = num(d, "tolerance_g") ?? 0;
++      if (actual !== null && target !== null && Math.abs(actual - target) > tol) {
++        out.push(`Net weight ${actual}g is outside ${target}g ± ${tol}g`);
++      }
++      const m = num(d, "moisture_pct");
++      if (m !== null && m > CCP_MOISTURE_LIMIT) out.push(`Moisture ${m}% is above the ${CCP_MOISTURE_LIMIT}% limit`);
++      const aw = num(d, "water_activity");
++      if (aw !== null && aw > WATER_ACTIVITY_MAX) out.push(`Water activity ${aw} is above ${WATER_ACTIVITY_MAX}`);
++      if (str(d, "sensory") === "Abnormal") out.push("Sensory check abnormal");
++      if (str(d, "seal") === "Seal defective") out.push("Seal defective");
++      if (str(d, "label_check") === "Label incorrect") out.push("Label incorrect");
++      if (str(d, "foreign_body") === "Detected") out.push("CCP-2 breached — foreign body / metal detected");
++      return out;
++    },
++    ccpTag: () => "CCP-2",
++  },
++
++  // ---------------------------------------------------------------- Prerequisite programmes
++  {
++    key: "cleaning_sanitation",
++    label: "Cleaning & Sanitation",
++    icon: "🧼",
++    group: "prp",
++    description: "Daily/weekly cleaning and sanitising of equipment, surfaces and premises.",
++    frequency: "Daily",
++    dateKey: "date",
++    staleDays: 3,
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "area_equipment", label: "Area / Equipment", type: "text", suggest: "history", required: true, placeholder: "Mixing table & bowls" },
++      { key: "cleaning_task", label: "Cleaning Task", type: "text", suggest: "history", required: true, placeholder: "Wash + sanitise after use" },
++      { key: "sanitiser", label: "Sanitiser Used & Concentration", type: "text", suggest: "history", placeholder: "Sodium hypochlorite 200ppm" },
++      { key: "performed_by", label: "Performed By", type: "text", suggest: "history", required: true, sticky: true },
++      { key: "time", label: "Time", type: "time", default: "now" },
++      { key: "verified_by", label: "Verified By (Supervisor)", type: "text", suggest: "history", sticky: true },
++      { key: "corrective_action", label: "Corrective Action (if any)", type: "text" },
++      { key: "remarks", label: "Remarks", type: "text" },
++    ],
++  },
++  {
++    key: "personnel_hygiene",
++    label: "Personnel Hygiene",
++    icon: "🧤",
++    group: "prp",
++    description: "Daily hygiene check on production staff before they start handling product.",
++    frequency: "Daily, each staff member",
++    dateKey: "date",
++    staleDays: 3,
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "employee_name", label: "Employee Name", type: "text", suggest: "history", required: true },
++      { key: "health", label: "Health Declaration", type: "select", required: true, default: "Fit", options: ["Fit", "Unfit"] },
++      { key: "protective_clothing", label: "Protective Clothing Worn", type: "select", required: true, default: "Yes", options: ["Yes", "No"] },
++      { key: "hand_hygiene", label: "Hand Hygiene Check", type: "select", required: true, default: "Washed & sanitised", options: ["Washed & sanitised", "Not done"] },
++      { key: "jewellery_nails", label: "Jewellery / Nails Check", type: "select", required: true, default: "None worn / trimmed", options: ["None worn / trimmed", "Not compliant"] },
++      { key: "verified_by", label: "Verified By (Supervisor)", type: "text", suggest: "history", sticky: true },
++      { key: "remarks", label: "Remarks", type: "text" },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      if (str(d, "health") === "Unfit") out.push("Employee declared unfit — must not handle product");
++      if (str(d, "protective_clothing") === "No") out.push("Protective clothing not worn");
++      if (str(d, "hand_hygiene") === "Not done") out.push("Hand hygiene not done");
++      if (str(d, "jewellery_nails") === "Not compliant") out.push("Jewellery / nails not compliant");
++      return out;
++    },
++  },
++  {
++    key: "staff_training",
++    label: "Staff Training",
++    icon: "🎓",
++    group: "prp",
++    description: "Food safety and hygiene training given to staff — topic, trainer, who attended.",
++    frequency: "Per session",
++    dateKey: "date",
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true },
++      { key: "topic", label: "Training Topic", type: "text", suggest: "history", required: true, placeholder: "Personal hygiene & handwashing" },
++      { key: "trainer", label: "Trainer", type: "text", suggest: "history", required: true },
++      { key: "attendees", label: "Attendees", type: "textarea", required: true, full: true, placeholder: "J. Mwangi, P. Otieno" },
++      { key: "duration", label: "Duration", type: "text", placeholder: "1 hr" },
++      { key: "method", label: "Method", type: "select", default: "In-house", options: ["In-house", "External", "On-the-job", "Toolbox talk"] },
++      { key: "sign_off", label: "Sign-off", type: "text", default: "All attendees signed register" },
++    ],
++  },
++  {
++    key: "pest_control",
++    label: "Pest Control",
++    icon: "🐀",
++    group: "prp",
++    description: "Inspection for pest evidence and any treatment applied, internal or contracted.",
++    frequency: "Monthly (or per contractor visit)",
++    dateKey: "date",
++    nilAllowed: true,
++    correctiveKey: "treatment_applied",
++    due: { key: "next_inspection_due", groupKey: "area_inspected", noun: "inspection" },
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "area_inspected", label: "Area Inspected", type: "text", suggest: "history", required: true, placeholder: "Raw material store" },
++      { key: "evidence", label: "Evidence of Pests (Y/N)", type: "select", required: true, default: "N", options: YN },
++      { key: "findings", label: "Findings", type: "text", placeholder: "No droppings/gnaw marks" },
++      { key: "treatment_applied", label: "Treatment Applied", type: "text", placeholder: "Bait stations checked" },
++      { key: "applied_by", label: "Applied By", type: "text", suggest: "history", placeholder: "Internal / contractor name" },
++      { key: "next_inspection_due", label: "Next Inspection Due", type: "date" },
++      { key: "remarks", label: "Remarks", type: "text" },
++    ],
++    check: (d) => (str(d, "evidence") === "Y" ? ["Evidence of pests found"] : []),
++  },
++  {
++    key: "supplier_approval",
++    label: "Supplier Approval",
++    icon: "🤝",
++    group: "prp",
++    description: "Which suppliers are approved, whether they've provided a Certificate of Analysis, and audit history.",
++    frequency: "At approval, then annual review",
++    dateKey: "approval_date",
++    due: { key: "next_review_due", groupKey: "supplier_name", noun: "review" },
++    fields: [
++      { key: "supplier_name", label: "Supplier Name", type: "text", suggest: "history", required: true },
++      { key: "material_supplied", label: "Material Supplied", type: "text", suggest: "materials", required: true },
++      { key: "approval_date", label: "Approval Date", type: "date", default: "today", required: true },
++      { key: "coa_received", label: "COA Received (Y/N)", type: "select", required: true, default: "N", options: YN },
++      { key: "last_audit", label: "Last Audit / Visit Date", type: "date" },
++      { key: "rating", label: "Rating (1-5)", type: "select", options: ["1", "2", "3", "4", "5"] },
++      { key: "reviewed_by", label: "Reviewed By", type: "text", suggest: "history", required: true },
++      { key: "next_review_due", label: "Next Review Due", type: "date", required: true },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      if (str(d, "coa_received") === "N") out.push("No Certificate of Analysis on file");
++      const r = num(d, "rating");
++      if (r !== null && r <= 2) out.push(`Low supplier rating (${r}/5)`);
++      return out;
++    },
++  },
++  {
++    key: "equipment_calibration",
++    label: "Equipment Calibration & Maintenance",
++    icon: "⚖️",
++    group: "prp",
++    description: "Scales, sealers and any measuring equipment — calibration and maintenance history.",
++    frequency: "Per schedule (e.g. 6-monthly)",
++    dateKey: "date",
++    due: { key: "next_due", groupKey: "equipment_name", noun: "calibration / maintenance" },
++    fields: [
++      { key: "equipment_name", label: "Equipment Name", type: "text", suggest: "history", required: true, placeholder: "Digital platform scale" },
++      { key: "tag_no", label: "ID / Tag No.", type: "text", suggest: "history", placeholder: "SCL-01" },
++      { key: "date", label: "Calibration / Maintenance Date", type: "date", default: "today", required: true },
++      { key: "performed_by", label: "Performed By", type: "text", suggest: "history", required: true },
++      { key: "result", label: "Result / Findings", type: "text", required: true, placeholder: "Within tolerance (±1g)" },
++      { key: "next_due", label: "Next Due Date", type: "date", required: true },
++      { key: "remarks", label: "Remarks", type: "text" },
++    ],
++  },
++  {
++    key: "water_quality",
++    label: "Water Quality",
++    icon: "💧",
++    group: "prp",
++    description: "If water touches product or cleaning surfaces — periodic potability testing.",
++    frequency: "Per test schedule (e.g. 6-monthly)",
++    dateKey: "date",
++    resultKey: "pass_fail",
++    failValues: ["Fail"],
++    due: { key: "next_test_due", groupKey: "water_source", noun: "water test" },
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true },
++      { key: "water_source", label: "Water Source", type: "text", suggest: "history", required: true, placeholder: "Borehole (via storage tank)" },
++      { key: "parameter_tested", label: "Parameter Tested", type: "text", suggest: "history", required: true, placeholder: "Potability / microbial screen" },
++      { key: "result", label: "Result", type: "text", required: true, placeholder: "Within WHO/KEBS limits" },
++      { key: "pass_fail", label: "Pass / Fail", type: "select", required: true, default: "Pass", options: ["Pass", "Fail"] },
++      { key: "tested_by", label: "Tested By", type: "text", suggest: "history", required: true, placeholder: "External lab" },
++      { key: "next_test_due", label: "Next Test Due", type: "date", required: true },
++    ],
++  },
++  {
++    key: "storage_conditions",
++    label: "Storage Conditions",
++    icon: "🌡️",
++    group: "prp",
++    description: "Temperature, humidity and pest-sighting checks in raw material and finished goods stores.",
++    frequency: "Daily",
++    dateKey: "date",
++    staleDays: 3,
++    correctiveKey: "remarks",
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true, sticky: true },
++      { key: "time", label: "Time", type: "time", default: "now", required: true },
++      { key: "storage_area", label: "Storage Area", type: "text", suggest: "history", required: true, placeholder: "Finished goods store" },
++      { key: "temperature", label: "Temperature (°C)", type: "number", step: "0.1", required: true },
++      { key: "humidity", label: "Humidity (%)", type: "number", step: "1", required: true },
++      { key: "pest_sightings", label: "Pest Sightings (Y/N)", type: "select", required: true, default: "N", options: YN },
++      { key: "checked_by", label: "Checked By", type: "text", suggest: "history", required: true, sticky: true },
++      { key: "remarks", label: "Remarks", type: "text", placeholder: "Required if a limit is breached" },
++    ],
++    check: (d) => {
++      const out: string[] = [];
++      const t = num(d, "temperature");
++      const h = num(d, "humidity");
++      if (t !== null && t > STORAGE_TEMP_MAX_C) out.push(`Temperature ${t}°C is above ${STORAGE_TEMP_MAX_C}°C`);
++      if (h !== null && h > STORAGE_HUMIDITY_MAX) out.push(`Humidity ${h}% is above ${STORAGE_HUMIDITY_MAX}%`);
++      if (str(d, "pest_sightings") === "Y") out.push("Pest sighting reported");
++      return out;
++    },
++  },
++  {
++    key: "traceability",
++    label: "Traceability & Batch Coding",
++    icon: "🔗",
++    group: "prp",
++    description: "Links a finished batch back to its raw material lots and forward to where it was distributed — your recall trail.",
++    frequency: "Every batch",
++    dateKey: "production_date",
++    batchKey: "batch_number",
++    fields: [
++      { key: "batch_number", label: "Batch No.", type: "text", suggest: "batches", required: true },
++      { key: "production_date", label: "Production Date", type: "date", default: "today", required: true, fromBatchDate: true },
++      { key: "raw_material_lots", label: "Raw Material Lot(s) Used", type: "text", required: true, placeholder: "CHL-0903 / SLT-0810" },
++      { key: "qty_produced", label: "Qty Produced", type: "text", required: true },
++      { key: "destinations", label: "Distribution Destination(s)", type: "text", suggest: "history", placeholder: "Hotel accounts — Nairobi route" },
++      { key: "date_dispatched", label: "Date Dispatched", type: "date" },
++      {
++        key: "recall_status",
++        label: "Recall Status",
++        type: "select",
++        required: true,
++        default: "None — no recall issued",
++        options: ["None — no recall issued", "Under investigation", "Recall issued"],
++      },
++    ],
++    check: (d) => (str(d, "recall_status") !== "None — no recall issued" && str(d, "recall_status") !== "" ? [`Recall status: ${str(d, "recall_status")}`] : []),
++  },
++
++  // ---------------------------------------------------------------- Issues & corrective action
++  {
++    key: "customer_complaints",
++    label: "Customer Complaint Log",
++    icon: "📣",
++    group: "issues",
++    description: "Every complaint received — or a NIL entry confirming none were received in a period.",
++    frequency: "Per complaint / NIL monthly",
++    dateKey: "date_received",
++    batchKey: "product_batch",
++    closeKey: "date_closed",
++    nilAllowed: true,
++    fields: [
++      { key: "date_received", label: "Date Received", type: "date", default: "today", required: true },
++      { key: "complainant", label: "Complainant Name & Contact", type: "text", required: true },
++      { key: "product_batch", label: "Product & Batch No.", type: "text", suggest: "batches", required: true },
++      { key: "nature", label: "Nature of Complaint", type: "textarea", required: true, full: true },
++      { key: "severity", label: "Severity", type: "select", required: true, default: "Low", options: ["Low", "Med", "High"] },
++      { key: "investigation", label: "Investigation / Root Cause", type: "textarea", full: true },
++      { key: "corrective_action", label: "Corrective Action", type: "textarea", full: true },
++      { key: "date_closed", label: "Date Closed", type: "date" },
++      { key: "closed_by", label: "Closed By", type: "text", suggest: "history" },
++    ],
++    check: (d) => (str(d, "severity") === "High" ? ["High-severity complaint"] : []),
++    validate: (d) => (str(d, "date_closed") && !str(d, "closed_by") ? "Enter who closed this complaint" : null),
++  },
++  {
++    key: "non_conformance",
++    label: "Non-Conformance & CAPA",
++    icon: "🛠️",
++    group: "issues",
++    description: "Internal rejects and issues (separate from customer complaints) with corrective and preventive action.",
++    frequency: "Per event",
++    dateKey: "date",
++    batchKey: "batch_number",
++    closeKey: "date_closed",
++    nilAllowed: true,
++    fields: [
++      { key: "date", label: "Date", type: "date", default: "today", required: true },
++      { key: "batch_number", label: "Batch No.", type: "text", suggest: "batches" },
++      { key: "description", label: "Description of Non-Conformance", type: "textarea", required: true, full: true },
++      { key: "root_cause", label: "Root Cause", type: "textarea", full: true },
++      { key: "corrective_action", label: "Corrective Action", type: "textarea", required: true, full: true },
++      { key: "preventive_action", label: "Preventive Action", type: "textarea", full: true },
++      { key: "responsible_person", label: "Responsible Person", type: "text", suggest: "history", required: true },
++      { key: "date_closed", label: "Date Closed", type: "date" },
++      { key: "verified_by", label: "Verified By", type: "text", suggest: "history" },
++    ],
++    validate: (d) => (str(d, "date_closed") && !str(d, "verified_by") ? "Enter who verified the closure" : null),
++  },
++];
++
++export const RECORD_TYPE_MAP: Record<string, RecordTypeConfig> = Object.fromEntries(RECORD_TYPES.map((r) => [r.key, r]));
++
++export const GROUPS: { key: GroupKey; title: string; blurb: string }[] = [
++  { key: "ccp", title: "CCP & Product QC", blurb: "The checks that control the two Critical Control Points, plus production records" },
++  { key: "prp", title: "Prerequisite Programmes", blurb: "Hygiene, pest, supplier, equipment, water, storage and traceability records that support the CCPs" },
++  { key: "issues", title: "Complaints & Corrective Action", blurb: "Customer complaints and internal non-conformances — log a NIL entry if none" },
++];
++
++// ------------------------------------------------------- shared evaluation
++
++export type Evaluation = {
++  data: Data;
++  reasons: string[];
++  flagged: boolean;
++  open: boolean;
++};
++
++/** Applies automatic limit checks. Called on every keystroke in the form AND again on save, so what's stored always matches the limits. */
++export function evaluate(cfg: RecordTypeConfig, raw: Data): Evaluation {
++  const data: Data = { ...raw };
++  const reasons = cfg.check ? cfg.check(data) : [];
++
++  if (cfg.autoFail && cfg.resultKey && reasons.length > 0 && cfg.failValues?.length) {
++    data[cfg.resultKey] = cfg.failValues[0];
++  }
++
++  const resultFailed = !!(cfg.resultKey && cfg.failValues?.includes(str(data, cfg.resultKey)));
++  if (resultFailed && reasons.length === 0) {
++    reasons.push(`Marked ${str(data, cfg.resultKey!)}`);
++  }
++
++  return {
++    data,
++    reasons,
++    flagged: reasons.length > 0,
++    open: cfg.closeKey ? !str(data, cfg.closeKey) : false,
++  };
++}
++
++// ----------------------------------------------------- HACCP plan (static)
++
++export const HACCP_PLAN = {
++  product: [
++    ["Product name", "SpiseUp Africa spicy salt seasoning"],
++    ["Key ingredients", "Dried chili, salt (and other declared seasoning ingredients)"],
++    ["Packaging", "Sealed retail/food-service pack, labelled with batch code and best-before date"],
++    ["Storage & shelf life", "Ambient, dry storage — shelf life per stability testing"],
++    ["Intended use", "Direct food seasoning — hotels, food service, retail consumers"],
++    ["Distribution", "100+ hotel accounts across Kenya; growing retail footprint"],
++  ] as [string, string][],
++  processFlow: [
++    "Receiving raw materials (chili, salt) → Raw Material QC check",
++    "Storage of raw materials",
++    "Weighing & mixing",
++    "Drying",
++    "Grinding / blending",
++    "In-process QC checks",
++    "Packaging & sealing",
++    "Final Product QC / release",
++    "Storage of finished goods",
++    "Dispatch to hotel/retail accounts",
++  ],
++  hazards: [
++    ["Receiving raw chili & salt", "Mould/mycotoxins, microbial contamination", "None expected if food-grade", "Foreign matter (stones, stalks, packaging debris)"],
++    ["Storage of raw materials", "Microbial growth if damp", "None", "Pest contamination"],
++    ["Weighing & mixing", "Cross-contact if shared equipment not cleaned", "Sanitiser residue if rinsed poorly", "Foreign objects from equipment"],
++    ["Drying", "Insufficient drying allows mould/bacterial growth", "None", "None"],
++    ["Grinding / blending", "None beyond above", "None", "Metal fragments from grinder wear"],
++    ["Packaging & sealing", "Contamination if packaging not food-grade", "None", "Foreign matter, packaging fragments"],
++    ["Storage of finished goods", "Microbial growth if damp/pest ingress", "None", "Pest contamination"],
++  ] as string[][],
++  ccps: [
++    {
++      id: "CCP-1" as CcpId,
++      step: "Drying",
++      hazard: "Moisture content",
++      limit: `≤ ${CCP_MOISTURE_LIMIT}% (verify against your own shelf-life trial)`,
++      monitoring: "Moisture meter reading per batch, logged in In-Process QC",
++      corrective: "Re-dry batch; hold and re-test; do not release",
++      verification: "Weekly review of In-Process QC log by supervisor",
++      recordType: "in_process_qc",
++    },
++    {
++      id: "CCP-2" as CcpId,
++      step: "Packaging / Final QC",
++      hazard: "Foreign body / metal contamination",
++      limit: "Zero detectable metal fragments (sieve/visual, or metal detector if installed)",
++      monitoring: "Visual/sieve check every batch, logged in Final Product QC",
++      corrective: "Segregate and re-check batch; investigate equipment wear",
++      verification: "Monthly review of Final Product QC log by supervisor",
++      recordType: "final_product_qc",
++    },
++  ],
++  prps: [
++    ["Cleaning & Sanitation programme", "cleaning_sanitation"],
++    ["Personnel Hygiene programme", "personnel_hygiene"],
++    ["Staff Training programme", "staff_training"],
++    ["Pest Control programme", "pest_control"],
++    ["Supplier Approval programme", "supplier_approval"],
++    ["Equipment Calibration & Maintenance", "equipment_calibration"],
++    ["Water Quality monitoring", "water_quality"],
++    ["Storage condition control", "storage_conditions"],
++    ["Traceability & recall procedure", "traceability"],
++  ] as [string, string][],
++  verification: [
++    "Supervisor reviews all logs weekly; sign-off recorded on each log.",
++    "Full plan reviewed at least annually, or sooner after any process, supplier, or product change.",
++    "Any recurring non-conformance (see Non-Conformance & CAPA log) triggers a review of this plan, not just the affected batch.",
++  ],
++};
+diff --git a/lib/qc/queries.ts b/lib/qc/queries.ts
+new file mode 100644
+index 0000000..11083d7
+--- /dev/null
++++ b/lib/qc/queries.ts
+@@ -0,0 +1,158 @@
++import type { SupabaseClient } from "@supabase/supabase-js";
++import { DUE_SOON_DAYS, RECORD_TYPES, RECORD_TYPE_MAP, str, type CcpId, type Data } from "./config";
++
++export type QcRecord = {
++  id: string;
++  record_type: string;
++  record_date: string;
++  batch_number: string | null;
++  data: Data;
++  is_nil: boolean;
++  is_flagged: boolean;
++  flag_reason: string | null;
++  is_open: boolean;
++  entered_by_name: string | null;
++  created_at: string;
++};
++
++export type QcReview = {
++  record_type: string;
++  reviewed_by: string;
++  reviewed_at: string;
++  notes: string | null;
++};
++
++// ------------------------------------------------------------------ months
++
++/** Today's date in Kenya (EAT) as YYYY-MM-DD — avoids the UTC off-by-a-day between midnight and 3am. */
++export function todayNairobi(): string {
++  return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
++}
++
++export function currentMonth(): string {
++  return todayNairobi().slice(0, 7);
++}
++
++export function isValidMonth(m: string | undefined | null): m is string {
++  return !!m && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
++}
++
++/** [from, to) date range for a "YYYY-MM" month. */
++export function monthRange(month: string): { from: string; to: string } {
++  const [y, m] = month.split("-").map(Number);
++  return { from: `${month}-01`, to: new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10) };
++}
++
++export function monthLabel(month: string): string {
++  const [y, m] = month.split("-").map(Number);
++  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
++}
++
++export function shiftMonth(month: string, delta: number): string {
++  const [y, m] = month.split("-").map(Number);
++  return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
++}
++
++// ------------------------------------------------------------------- fetch
++
++const COLUMNS = "id, record_type, record_date, batch_number, data, is_nil, is_flagged, flag_reason, is_open, entered_by_name, created_at";
++
++/** Pages through PostgREST's 1000-row cap so a busy month is never silently truncated. */
++export async function fetchQcRecords(
++  supabase: SupabaseClient,
++  opts: { from: string; to: string; type?: string }
++): Promise<QcRecord[]> {
++  const pageSize = 1000;
++  let all: QcRecord[] = [];
++  let offset = 0;
++
++  while (true) {
++    let q = supabase
++      .from("QC_RECORDS")
++      .select(COLUMNS)
++      .gte("record_date", opts.from)
++      .lt("record_date", opts.to)
++      .order("record_date", { ascending: true })
++      .order("created_at", { ascending: true })
++      .range(offset, offset + pageSize - 1);
++    if (opts.type) q = q.eq("record_type", opts.type);
++
++    const { data, error } = await q;
++    if (error || !data) break;
++    all = all.concat(data as QcRecord[]);
++    if (data.length < pageSize) break;
++    offset += pageSize;
++  }
++  return all;
++}
++
++// ------------------------------------------------------------ due / overdue
++
++export type DueItem = {
++  recordType: string;
++  label: string; // e.g. "Digital platform scale — calibration / maintenance"
++  dueDate: string;
++  daysUntil: number; // negative = overdue
++};
++
++/** Latest record per equipment / supplier / area / water source, compared with its next-due date. */
++export async function fetchDueItems(supabase: SupabaseClient, today: string): Promise<DueItem[]> {
++  const dueTypes = RECORD_TYPES.filter((t) => t.due);
++  if (dueTypes.length === 0) return [];
++
++  const { data } = await supabase
++    .from("QC_RECORDS")
++    .select("record_type, record_date, data, is_nil")
++    .in("record_type", dueTypes.map((t) => t.key))
++    .eq("is_nil", false)
++    .order("record_date", { ascending: false })
++    .limit(2000);
++
++  const seen = new Set<string>();
++  const items: DueItem[] = [];
++  const todayMs = new Date(`${today}T00:00:00Z`).getTime();
++
++  for (const row of (data ?? []) as Pick<QcRecord, "record_type" | "record_date" | "data">[]) {
++    const cfg = RECORD_TYPE_MAP[row.record_type];
++    if (!cfg?.due) continue;
++    const group = str(row.data, cfg.due.groupKey).toLowerCase();
++    if (!group) continue;
++    const id = `${row.record_type}:${group}`;
++    if (seen.has(id)) continue; // rows are newest-first, so the first one seen is the latest
++    seen.add(id);
++
++    const due = str(row.data, cfg.due.key);
++    if (!due) continue;
++    const daysUntil = Math.round((new Date(`${due}T00:00:00Z`).getTime() - todayMs) / 86400000);
++    if (daysUntil <= DUE_SOON_DAYS) {
++      items.push({
++        recordType: row.record_type,
++        label: `${str(row.data, cfg.due.groupKey)} — ${cfg.due.noun}`,
++        dueDate: due,
++        daysUntil,
++      });
++    }
++  }
++  return items.sort((a, b) => a.daysUntil - b.daysUntil);
++}
++
++// -------------------------------------------------------------- CCP summary
++
++export type CcpSummary = { id: CcpId; checks: number; breaches: number };
++
++export function ccpSummary(records: QcRecord[]): CcpSummary[] {
++  const out: Record<CcpId, CcpSummary> = {
++    "CCP-1": { id: "CCP-1", checks: 0, breaches: 0 },
++    "CCP-2": { id: "CCP-2", checks: 0, breaches: 0 },
++  };
++  for (const r of records) {
++    if (r.is_nil) continue;
++    const tag = RECORD_TYPE_MAP[r.record_type]?.ccpTag?.(r.data);
++    if (!tag) continue;
++    out[tag].checks += 1;
++    // For CCP-2 every final QC record is a check, but only a metal/foreign body detection is a CCP breach
++    const isBreach = tag === "CCP-2" ? str(r.data, "foreign_body") === "Detected" : r.is_flagged;
++    if (isBreach) out[tag].breaches += 1;
++  }
++  return [out["CCP-1"], out["CCP-2"]];
++}
+diff --git a/supabase/qc_schema.sql b/supabase/qc_schema.sql
+new file mode 100644
+index 0000000..044b654
+--- /dev/null
++++ b/supabase/qc_schema.sql
+@@ -0,0 +1,72 @@
++-- PennyPal — Quality Control & HACCP module
++-- Run this in the Supabase SQL editor AFTER supabase/schema.sql (it relies on
++-- public.is_owner()). Safe to re-run: every policy/trigger is dropped first.
++--
++-- Design: one table for every HACCP record type (cleaning, raw material QC,
++-- in-process QC, final QC, complaints, hygiene, pest control ...). Each
++-- record type has different columns, so the type-specific fields live in
++-- `data` (jsonb) while everything the app filters/reports on (type, date,
++-- batch, flagged, open) is a real indexed column. Adding a new QC check
++-- later needs NO migration — only a new entry in lib/qc/config.ts.
++
++create table if not exists public."QC_RECORDS" (
++  id              uuid primary key default gen_random_uuid(),
++  record_type     text not null check (record_type ~ '^[a-z_]+$'),
++  record_date     date not null,
++  batch_number    text,
++  data            jsonb not null default '{}'::jsonb,
++  -- NIL entry = "nothing happened this period" (no complaints, no pests...).
++  -- Auditors (KEBS) want proof the log is active, so these are real rows.
++  is_nil          boolean not null default false,
++  -- Set by the app when a check breaches a limit / fails / finds an issue.
++  is_flagged      boolean not null default false,
++  flag_reason     text,
++  -- Closable records (complaints, non-conformances): true until closed.
++  is_open         boolean not null default false,
++  entered_by      uuid default auth.uid() references auth.users(id) on delete set null,
++  entered_by_name text,
++  created_at      timestamptz not null default now(),
++  updated_at      timestamptz not null default now()
++);
++
++create index if not exists qc_records_type_date_idx on public."QC_RECORDS" (record_type, record_date desc);
++create index if not exists qc_records_date_idx      on public."QC_RECORDS" (record_date);
++create index if not exists qc_records_batch_idx     on public."QC_RECORDS" (batch_number) where batch_number is not null;
++create index if not exists qc_records_open_idx      on public."QC_RECORDS" (record_type) where is_open;
++
++create or replace function public.qc_touch_updated_at()
++returns trigger language plpgsql as $$
++begin
++  new.updated_at = now();
++  return new;
++end;
++$$;
++
++drop trigger if exists qc_records_touch on public."QC_RECORDS";
++create trigger qc_records_touch
++  before update on public."QC_RECORDS"
++  for each row execute function public.qc_touch_updated_at();
++
++alter table public."QC_RECORDS" enable row level security;
++drop policy if exists "owners manage qc records" on public."QC_RECORDS";
++create policy "owners manage qc records" on public."QC_RECORDS"
++  for all using (public.is_owner()) with check (public.is_owner());
++
++-- Supervisor month-end review. HACCP verification means a supervisor
++-- reviews each log; this records who signed off which log for which month
++-- and prints on the monthly report.
++create table if not exists public."QC_REVIEWS" (
++  id             uuid primary key default gen_random_uuid(),
++  review_month   date not null check (extract(day from review_month) = 1),
++  record_type    text not null check (record_type ~ '^[a-z_]+$'),
++  reviewed_by    text not null,
++  reviewed_by_id uuid default auth.uid() references auth.users(id) on delete set null,
++  reviewed_at    timestamptz not null default now(),
++  notes          text,
++  unique (review_month, record_type)
++);
++
++alter table public."QC_REVIEWS" enable row level security;
++drop policy if exists "owners manage qc reviews" on public."QC_REVIEWS";
++create policy "owners manage qc reviews" on public."QC_REVIEWS"
++  for all using (public.is_owner()) with check (public.is_owner());
+-- 
+2.43.0
+
