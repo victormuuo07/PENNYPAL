@@ -6,6 +6,8 @@ import BusinessHealthPanel from "@/components/BusinessHealthPanel";
 import TopPerformers from "@/components/TopPerformers";
 import RecentActivity from "@/components/RecentActivity";
 import TradeHistorySinceLaunch from "@/components/TradeHistorySinceLaunch";
+import TaskWidget from "@/components/crm/TaskWidget";
+import { fetchTasks } from "@/lib/crm";
 
 // Never serve a cached/static snapshot — every sale, restock, or expense
 // entered should be reflected on the very next load.
@@ -32,7 +34,7 @@ export default async function DashboardPage() {
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user!.id).single();
   const isOwner = profile?.role === "owner";
 
-  const [sales, { data: expenses }] = await Promise.all([
+  const [sales, { data: expenses }, tasks] = await Promise.all([
     fetchAllRows<SaleRow>(
       supabase,
       "SALES",
@@ -40,6 +42,9 @@ export default async function DashboardPage() {
       "Date"
     ),
     supabase.from("EXPENSES").select("amount, date, category"),
+    // Returns [] if supabase/crm_schema.sql hasn't been run yet — the
+    // widget below simply doesn't render rather than erroring.
+    fetchTasks(supabase),
   ]);
 
   // "This month vs last month" is what makes a trend arrow meaningful — an
@@ -175,6 +180,8 @@ export default async function DashboardPage() {
           {isOwner ? "This month's overview of SpiseUp finances" : "Your sales overview"}
         </p>
       </div>
+
+      <TaskWidget tasks={tasks} currentUserId={user!.id} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <SummaryCard label="This Month's Balance" value={balanceThisMonth} tone="balance" previousValue={balanceLastMonth} />

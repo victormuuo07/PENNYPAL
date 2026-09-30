@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { computeHotelPerformance, computeMamaPerformance } from "@/lib/territoryAnalysis";
+import { fetchAllActivities, type Activity } from "@/lib/crm";
 import AddHotelForm from "./components/AddHotelForm";
 import RecordRefillForm from "./components/RecordRefillForm";
 import PerformanceOverview from "./components/PerformanceOverview";
@@ -11,15 +12,30 @@ import { REFILL_PRODUCTS } from "./constants";
 
 export const dynamic = "force-dynamic";
 
+function groupByEntity(activities: Activity[], type: "hotel" | "mama"): Record<string, Activity[]> {
+  const out: Record<string, Activity[]> = {};
+  for (const a of activities) {
+    if (a.entity_type !== type) continue;
+    (out[a.entity_id] ??= []).push(a);
+  }
+  return out;
+}
+
 export default async function DistributionPage() {
   const supabase = createClient();
 
-  const [{ data: hotels }, { data: refills }, { data: mamas }, { data: mamaPurchases }] = await Promise.all([
+  const [{ data: hotels }, { data: refills }, { data: mamas }, { data: mamaPurchases }, activities] = await Promise.all([
     supabase.from("HOTELS").select("*").order("hotel_name"),
     supabase.from("HOTEL_REFILLS").select("*").order("refill_date", { ascending: false }),
     supabase.from("MAMA_MBOGAS").select("*").order("shop_name"),
     supabase.from("MAMA_MBOGAS_PURCHASES").select("*").order("purchase_date", { ascending: false }),
+    // Returns [] if supabase/crm_schema.sql hasn't been run yet — the Log
+    // buttons still work once someone opens them, they'll just start empty.
+    fetchAllActivities(supabase, 1000),
   ]);
+
+  const activitiesByHotel = groupByEntity(activities, "hotel");
+  const activitiesByMama = groupByEntity(activities, "mama");
 
   const performance = computeHotelPerformance(hotels ?? [], refills ?? []);
   const mamaPerformance = computeMamaPerformance(mamas ?? [], mamaPurchases ?? []);
@@ -41,7 +57,7 @@ export default async function DistributionPage() {
           <AddHotelForm />
           <RecordRefillForm hotels={hotels ?? []} products={REFILL_PRODUCTS} />
         </div>
-        <PerformanceOverview performance={performance} />
+        <PerformanceOverview performance={performance} activitiesByHotel={activitiesByHotel} />
       </div>
 
       <div>
@@ -50,7 +66,7 @@ export default async function DistributionPage() {
           <AddMamaForm />
           <RecordMamaPurchaseForm mamas={mamas ?? []} />
         </div>
-        <MamaPerformanceOverview performance={mamaPerformance} />
+        <MamaPerformanceOverview performance={mamaPerformance} activitiesByMama={activitiesByMama} />
       </div>
     </div>
   );

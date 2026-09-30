@@ -17,6 +17,7 @@ const OWNER_ONLY = new Set([
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: "📊" },
+  { href: "/dashboard/tasks", label: "Tasks", icon: "✅" },
   { href: "/dashboard/analytics", label: "Analytics", icon: "📈" },
   { href: "/dashboard/sales", label: "Sales", icon: "💰" },
   { href: "/dashboard/expenses", label: "Expenses", icon: "🧾" },

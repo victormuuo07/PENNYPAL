@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { MamaPerformance, PerformanceTier } from "@/lib/territoryAnalysis";
+import ActivityLog from "@/components/crm/ActivityLog";
+import { fmtDate, type Activity } from "@/lib/crm";
 
 const TIER_STYLES: Record<PerformanceTier, string> = {
   Star: "bg-green-50 text-green-700",
@@ -14,10 +16,11 @@ const TIER_STYLES: Record<PerformanceTier, string> = {
   New: "bg-gray-100 text-gray-600",
 };
 
-export default function MamaPerformanceOverview({ performance }: { performance: MamaPerformance[] }) {
+export default function MamaPerformanceOverview({ performance, activitiesByMama = {} }: { performance: MamaPerformance[]; activitiesByMama?: Record<string, Activity[]> }) {
   const router = useRouter();
   const supabase = createClient();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editForm, setEditForm] = useState({ shop_name: "", location: "", contact_phone: "", status: "Active" });
 
@@ -66,6 +69,7 @@ export default function MamaPerformanceOverview({ performance }: { performance: 
             <th className="px-4 py-3 font-medium text-right">Revenue</th>
             <th className="px-4 py-3 font-medium">Status</th>
             <th className="px-4 py-3 font-medium">Due?</th>
+            <th className="px-4 py-3 font-medium">Last Contact</th>
             <th className="px-4 py-3 font-medium"></th>
           </tr>
         </thead>
@@ -73,7 +77,7 @@ export default function MamaPerformanceOverview({ performance }: { performance: 
           {sorted.map((m) =>
             editingId === m.id ? (
               <tr key={m.id} className="border-t border-cream-deep bg-gold/5">
-                <td className="px-2 py-2" colSpan={7}>
+                <td className="px-2 py-2" colSpan={8}>
                   <div className="flex flex-wrap gap-2 items-center">
                     <input
                       value={editForm.shop_name}
@@ -115,26 +119,44 @@ export default function MamaPerformanceOverview({ performance }: { performance: 
                 </td>
               </tr>
             ) : (
-              <tr key={m.id} className="border-t border-cream-deep">
-                <td className="px-4 py-3 font-medium">{m.shop_name}</td>
-                <td className="px-4 py-3 text-ink-soft">{m.location}</td>
-                <td className="px-4 py-3 text-right">{m.visit_count}</td>
-                <td className="px-4 py-3 text-right font-medium">KES {m.total_revenue.toLocaleString()}</td>
-                <td className="px-4 py-3">
-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[m.performance_tier]}`}>
-                    {m.performance_tier}
-                  </span>
-                </td>
-                <td className="px-4 py-3">{m.due_for_visit ? "🛒 Yes" : "—"}</td>
-                <td className="px-4 py-3">
-                  <button
-                    onClick={() => startEdit(m)}
-                    className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
-                  >
-                    ✏️ Edit
-                  </button>
-                </td>
-              </tr>
+              <Fragment key={m.id}>
+                <tr className="border-t border-cream-deep">
+                  <td className="px-4 py-3 font-medium">{m.shop_name}</td>
+                  <td className="px-4 py-3 text-ink-soft">{m.location}</td>
+                  <td className="px-4 py-3 text-right">{m.visit_count}</td>
+                  <td className="px-4 py-3 text-right font-medium">KES {m.total_revenue.toLocaleString()}</td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[m.performance_tier]}`}>
+                      {m.performance_tier}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">{m.due_for_visit ? "🛒 Yes" : "—"}</td>
+                  <td className="px-4 py-3 text-ink-soft text-xs whitespace-nowrap">
+                    {activitiesByMama[m.id]?.[0] ? fmtDate(activitiesByMama[m.id][0].created_at.slice(0, 10)) : "—"}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <button
+                      onClick={() => startEdit(m)}
+                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1 mr-1"
+                    >
+                      ✏️ Edit
+                    </button>
+                    <button
+                      onClick={() => setExpandedId(expandedId === m.id ? null : m.id)}
+                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
+                    >
+                      📋 Log
+                    </button>
+                  </td>
+                </tr>
+                {expandedId === m.id && (
+                  <tr className="border-t border-cream-deep bg-cream-deep/30">
+                    <td className="px-4 py-3" colSpan={8}>
+                      <ActivityLog entityType="mama" entityId={m.id} entityLabel={m.shop_name} activities={activitiesByMama[m.id] ?? []} compact />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             )
           )}
         </tbody>
