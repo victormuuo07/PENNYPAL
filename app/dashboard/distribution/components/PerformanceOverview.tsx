@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { HotelPerformance, PerformanceTier } from "@/lib/territoryAnalysis";
+import ActivityLog from "@/components/crm/ActivityLog";
+import { fmtDate, type Activity } from "@/lib/crm";
 
 const TIER_STYLES: Record<PerformanceTier, string> = {
   Star: "bg-green-50 text-green-700",
@@ -14,10 +16,11 @@ const TIER_STYLES: Record<PerformanceTier, string> = {
   New: "bg-gray-100 text-gray-600",
 };
 
-export default function PerformanceOverview({ performance }: { performance: HotelPerformance[] }) {
+export default function PerformanceOverview({ performance, activitiesByHotel = {} }: { performance: HotelPerformance[]; activitiesByHotel?: Record<string, Activity[]> }) {
   const router = useRouter();
   const supabase = createClient();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editForm, setEditForm] = useState({ hotel_name: "", location: "", contact_phone: "", contact_person: "", status: "Active" });
 
@@ -79,6 +82,7 @@ export default function PerformanceOverview({ performance }: { performance: Hote
               <th className="px-4 py-3 font-medium">Frequency</th>
               <th className="px-4 py-3 font-medium">Performance</th>
               <th className="px-4 py-3 font-medium">Due?</th>
+              <th className="px-4 py-3 font-medium">Last Contact</th>
               <th className="px-4 py-3 font-medium"></th>
             </tr>
           </thead>
@@ -86,7 +90,7 @@ export default function PerformanceOverview({ performance }: { performance: Hote
             {sorted.map((h) =>
               editingId === h.id ? (
                 <tr key={h.id} className="border-t border-cream-deep bg-gold/5">
-                  <td className="px-2 py-2" colSpan={9}>
+                  <td className="px-2 py-2" colSpan={10}>
                     <div className="flex flex-wrap gap-2 items-center">
                       <input
                         value={editForm.hotel_name}
@@ -134,34 +138,52 @@ export default function PerformanceOverview({ performance }: { performance: Hote
                   </td>
                 </tr>
               ) : (
-                <tr key={h.id} className="border-t border-cream-deep">
-                  <td className="px-4 py-3 font-medium">{h.hotel_name}</td>
-                  <td className="px-4 py-3 text-ink-soft">{h.location}</td>
-                  <td className="px-4 py-3 text-right">{h.visit_count}</td>
-                  <td className="px-4 py-3 text-right font-medium">
-                    KES {h.total_revenue.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink-soft">
-                    KES {Math.round(h.avg_order_value).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3 text-ink-soft">{h.tier}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[h.performance_tier]}`}
-                    >
-                      {h.performance_tier} ({h.performance_score})
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{h.due_for_visit ? "🚚 Yes" : "—"}</td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => startEdit(h)}
-                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
-                    >
-                      ✏️ Edit
-                    </button>
-                  </td>
-                </tr>
+                <Fragment key={h.id}>
+                  <tr className="border-t border-cream-deep">
+                    <td className="px-4 py-3 font-medium">{h.hotel_name}</td>
+                    <td className="px-4 py-3 text-ink-soft">{h.location}</td>
+                    <td className="px-4 py-3 text-right">{h.visit_count}</td>
+                    <td className="px-4 py-3 text-right font-medium">
+                      KES {h.total_revenue.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink-soft">
+                      KES {Math.round(h.avg_order_value).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-ink-soft">{h.tier}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[h.performance_tier]}`}
+                      >
+                        {h.performance_tier} ({h.performance_score})
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">{h.due_for_visit ? "🚚 Yes" : "—"}</td>
+                    <td className="px-4 py-3 text-ink-soft text-xs whitespace-nowrap">
+                      {activitiesByHotel[h.id]?.[0] ? fmtDate(activitiesByHotel[h.id][0].created_at.slice(0, 10)) : "—"}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <button
+                        onClick={() => startEdit(h)}
+                        className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1 mr-1"
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        onClick={() => setExpandedId(expandedId === h.id ? null : h.id)}
+                        className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
+                      >
+                        📋 Log
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedId === h.id && (
+                    <tr className="border-t border-cream-deep bg-cream-deep/30">
+                      <td className="px-4 py-3" colSpan={10}>
+                        <ActivityLog entityType="hotel" entityId={h.id} entityLabel={h.hotel_name} activities={activitiesByHotel[h.id] ?? []} compact />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               )
             )}
           </tbody>

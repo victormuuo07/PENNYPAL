@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { currentMonth, fetchB2CCustomers, isValidMonth, monthLabel } from "@/lib/customers";
+import { fetchAllActivities, type Activity } from "@/lib/crm";
 import CustomerMonthPicker from "./components/CustomerMonthPicker";
 import B2CCustomersTable from "./components/B2CCustomersTable";
 
@@ -12,7 +13,15 @@ export default async function B2CCustomersPage({ searchParams }: { searchParams:
 
   // RLS on SALES does the access scoping for us: owners get every B2C
   // customer, reps only get customers from their own sales.
-  const { customers, newCount } = await fetchB2CCustomers(supabase, month);
+  const [{ customers, newCount }, allActivities] = await Promise.all([
+    fetchB2CCustomers(supabase, month),
+    fetchAllActivities(supabase, 1000),
+  ]);
+  const activitiesByCustomer: Record<string, Activity[]> = {};
+  for (const a of allActivities) {
+    if (a.entity_type !== "b2c") continue;
+    (activitiesByCustomer[a.entity_id] ??= []).push(a);
+  }
   const totalSpent = customers.reduce((sum, c) => sum + c.totalSpentInMonth, 0);
 
   return (
@@ -46,7 +55,7 @@ export default async function B2CCustomersPage({ searchParams }: { searchParams:
         </div>
       </div>
 
-      <B2CCustomersTable customers={customers} />
+      <B2CCustomersTable customers={customers} activitiesByCustomer={activitiesByCustomer} />
     </div>
   );
 }

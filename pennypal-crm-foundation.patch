@@ -1,0 +1,1420 @@
+From 426c1b4500ef450e2ad95f081f6eb0659da3f251 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 30 Sep 2026 19:16:26 +0000
+Subject: [PATCH] Add CRM foundation: activity log, tasks/reminders, and
+ quick-actions across Distribution/B2C/QC
+
+---
+ .../components/MamaPerformanceOverview.tsx    |  68 +++--
+ .../components/PerformanceOverview.tsx        |  84 ++++---
+ .../components/SilentHotelsAlert.tsx          |  60 ++++-
+ app/dashboard/distribution/page.tsx           |  22 +-
+ app/dashboard/page.tsx                        |   9 +-
+ .../components/B2CCustomersTable.tsx          |  62 +++--
+ app/dashboard/sales/customers/page.tsx        |  13 +-
+ .../tasks/components/TaskManager.tsx          | 233 ++++++++++++++++++
+ app/dashboard/tasks/page.tsx                  |  49 ++++
+ components/Sidebar.tsx                        |   1 +
+ components/crm/ActivityLog.tsx                | 184 ++++++++++++++
+ components/crm/TaskWidget.tsx                 |  38 +++
+ lib/crm.ts                                    | 155 ++++++++++++
+ supabase/crm_schema.sql                       | 114 +++++++++
+ 14 files changed, 1003 insertions(+), 89 deletions(-)
+ create mode 100644 app/dashboard/tasks/components/TaskManager.tsx
+ create mode 100644 app/dashboard/tasks/page.tsx
+ create mode 100644 components/crm/ActivityLog.tsx
+ create mode 100644 components/crm/TaskWidget.tsx
+ create mode 100644 lib/crm.ts
+ create mode 100644 supabase/crm_schema.sql
+
+diff --git a/app/dashboard/distribution/components/MamaPerformanceOverview.tsx b/app/dashboard/distribution/components/MamaPerformanceOverview.tsx
+index 86e3ce4..a0e7629 100644
+--- a/app/dashboard/distribution/components/MamaPerformanceOverview.tsx
++++ b/app/dashboard/distribution/components/MamaPerformanceOverview.tsx
+@@ -1,9 +1,11 @@
+ "use client";
+ 
+-import { useState } from "react";
++import { useState, Fragment } from "react";
+ import { useRouter } from "next/navigation";
+ import { createClient } from "@/lib/supabase/client";
+ import type { MamaPerformance, PerformanceTier } from "@/lib/territoryAnalysis";
++import ActivityLog from "@/components/crm/ActivityLog";
++import { fmtDate, type Activity } from "@/lib/crm";
+ 
+ const TIER_STYLES: Record<PerformanceTier, string> = {
+   Star: "bg-green-50 text-green-700",
+@@ -14,10 +16,11 @@ const TIER_STYLES: Record<PerformanceTier, string> = {
+   New: "bg-gray-100 text-gray-600",
+ };
+ 
+-export default function MamaPerformanceOverview({ performance }: { performance: MamaPerformance[] }) {
++export default function MamaPerformanceOverview({ performance, activitiesByMama = {} }: { performance: MamaPerformance[]; activitiesByMama?: Record<string, Activity[]> }) {
+   const router = useRouter();
+   const supabase = createClient();
+   const [editingId, setEditingId] = useState<string | null>(null);
++  const [expandedId, setExpandedId] = useState<string | null>(null);
+   const [saving, setSaving] = useState(false);
+   const [editForm, setEditForm] = useState({ shop_name: "", location: "", contact_phone: "", status: "Active" });
+ 
+@@ -66,6 +69,7 @@ export default function MamaPerformanceOverview({ performance }: { performance:
+             <th className="px-4 py-3 font-medium text-right">Revenue</th>
+             <th className="px-4 py-3 font-medium">Status</th>
+             <th className="px-4 py-3 font-medium">Due?</th>
++            <th className="px-4 py-3 font-medium">Last Contact</th>
+             <th className="px-4 py-3 font-medium"></th>
+           </tr>
+         </thead>
+@@ -73,7 +77,7 @@ export default function MamaPerformanceOverview({ performance }: { performance:
+           {sorted.map((m) =>
+             editingId === m.id ? (
+               <tr key={m.id} className="border-t border-cream-deep bg-gold/5">
+-                <td className="px-2 py-2" colSpan={7}>
++                <td className="px-2 py-2" colSpan={8}>
+                   <div className="flex flex-wrap gap-2 items-center">
+                     <input
+                       value={editForm.shop_name}
+@@ -115,26 +119,44 @@ export default function MamaPerformanceOverview({ performance }: { performance:
+                 </td>
+               </tr>
+             ) : (
+-              <tr key={m.id} className="border-t border-cream-deep">
+-                <td className="px-4 py-3 font-medium">{m.shop_name}</td>
+-                <td className="px-4 py-3 text-ink-soft">{m.location}</td>
+-                <td className="px-4 py-3 text-right">{m.visit_count}</td>
+-                <td className="px-4 py-3 text-right font-medium">KES {m.total_revenue.toLocaleString()}</td>
+-                <td className="px-4 py-3">
+-                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[m.performance_tier]}`}>
+-                    {m.performance_tier}
+-                  </span>
+-                </td>
+-                <td className="px-4 py-3">{m.due_for_visit ? "🛒 Yes" : "—"}</td>
+-                <td className="px-4 py-3">
+-                  <button
+-                    onClick={() => startEdit(m)}
+-                    className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
+-                  >
+-                    ✏️ Edit
+-                  </button>
+-                </td>
+-              </tr>
++              <Fragment key={m.id}>
++                <tr className="border-t border-cream-deep">
++                  <td className="px-4 py-3 font-medium">{m.shop_name}</td>
++                  <td className="px-4 py-3 text-ink-soft">{m.location}</td>
++                  <td className="px-4 py-3 text-right">{m.visit_count}</td>
++                  <td className="px-4 py-3 text-right font-medium">KES {m.total_revenue.toLocaleString()}</td>
++                  <td className="px-4 py-3">
++                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[m.performance_tier]}`}>
++                      {m.performance_tier}
++                    </span>
++                  </td>
++                  <td className="px-4 py-3">{m.due_for_visit ? "🛒 Yes" : "—"}</td>
++                  <td className="px-4 py-3 text-ink-soft text-xs whitespace-nowrap">
++                    {activitiesByMama[m.id]?.[0] ? fmtDate(activitiesByMama[m.id][0].created_at.slice(0, 10)) : "—"}
++                  </td>
++                  <td className="px-4 py-3 whitespace-nowrap">
++                    <button
++                      onClick={() => startEdit(m)}
++                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1 mr-1"
++                    >
++                      ✏️ Edit
++                    </button>
++                    <button
++                      onClick={() => setExpandedId(expandedId === m.id ? null : m.id)}
++                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
++                    >
++                      📋 Log
++                    </button>
++                  </td>
++                </tr>
++                {expandedId === m.id && (
++                  <tr className="border-t border-cream-deep bg-cream-deep/30">
++                    <td className="px-4 py-3" colSpan={8}>
++                      <ActivityLog entityType="mama" entityId={m.id} entityLabel={m.shop_name} activities={activitiesByMama[m.id] ?? []} compact />
++                    </td>
++                  </tr>
++                )}
++              </Fragment>
+             )
+           )}
+         </tbody>
+diff --git a/app/dashboard/distribution/components/PerformanceOverview.tsx b/app/dashboard/distribution/components/PerformanceOverview.tsx
+index fb614dc..7d05979 100644
+--- a/app/dashboard/distribution/components/PerformanceOverview.tsx
++++ b/app/dashboard/distribution/components/PerformanceOverview.tsx
+@@ -1,9 +1,11 @@
+ "use client";
+ 
+-import { useState } from "react";
++import { useState, Fragment } from "react";
+ import { useRouter } from "next/navigation";
+ import { createClient } from "@/lib/supabase/client";
+ import type { HotelPerformance, PerformanceTier } from "@/lib/territoryAnalysis";
++import ActivityLog from "@/components/crm/ActivityLog";
++import { fmtDate, type Activity } from "@/lib/crm";
+ 
+ const TIER_STYLES: Record<PerformanceTier, string> = {
+   Star: "bg-green-50 text-green-700",
+@@ -14,10 +16,11 @@ const TIER_STYLES: Record<PerformanceTier, string> = {
+   New: "bg-gray-100 text-gray-600",
+ };
+ 
+-export default function PerformanceOverview({ performance }: { performance: HotelPerformance[] }) {
++export default function PerformanceOverview({ performance, activitiesByHotel = {} }: { performance: HotelPerformance[]; activitiesByHotel?: Record<string, Activity[]> }) {
+   const router = useRouter();
+   const supabase = createClient();
+   const [editingId, setEditingId] = useState<string | null>(null);
++  const [expandedId, setExpandedId] = useState<string | null>(null);
+   const [saving, setSaving] = useState(false);
+   const [editForm, setEditForm] = useState({ hotel_name: "", location: "", contact_phone: "", contact_person: "", status: "Active" });
+ 
+@@ -79,6 +82,7 @@ export default function PerformanceOverview({ performance }: { performance: Hote
+               <th className="px-4 py-3 font-medium">Frequency</th>
+               <th className="px-4 py-3 font-medium">Performance</th>
+               <th className="px-4 py-3 font-medium">Due?</th>
++              <th className="px-4 py-3 font-medium">Last Contact</th>
+               <th className="px-4 py-3 font-medium"></th>
+             </tr>
+           </thead>
+@@ -86,7 +90,7 @@ export default function PerformanceOverview({ performance }: { performance: Hote
+             {sorted.map((h) =>
+               editingId === h.id ? (
+                 <tr key={h.id} className="border-t border-cream-deep bg-gold/5">
+-                  <td className="px-2 py-2" colSpan={9}>
++                  <td className="px-2 py-2" colSpan={10}>
+                     <div className="flex flex-wrap gap-2 items-center">
+                       <input
+                         value={editForm.hotel_name}
+@@ -134,34 +138,52 @@ export default function PerformanceOverview({ performance }: { performance: Hote
+                   </td>
+                 </tr>
+               ) : (
+-                <tr key={h.id} className="border-t border-cream-deep">
+-                  <td className="px-4 py-3 font-medium">{h.hotel_name}</td>
+-                  <td className="px-4 py-3 text-ink-soft">{h.location}</td>
+-                  <td className="px-4 py-3 text-right">{h.visit_count}</td>
+-                  <td className="px-4 py-3 text-right font-medium">
+-                    KES {h.total_revenue.toLocaleString()}
+-                  </td>
+-                  <td className="px-4 py-3 text-right text-ink-soft">
+-                    KES {Math.round(h.avg_order_value).toLocaleString()}
+-                  </td>
+-                  <td className="px-4 py-3 text-ink-soft">{h.tier}</td>
+-                  <td className="px-4 py-3">
+-                    <span
+-                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[h.performance_tier]}`}
+-                    >
+-                      {h.performance_tier} ({h.performance_score})
+-                    </span>
+-                  </td>
+-                  <td className="px-4 py-3">{h.due_for_visit ? "🚚 Yes" : "—"}</td>
+-                  <td className="px-4 py-3">
+-                    <button
+-                      onClick={() => startEdit(h)}
+-                      className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
+-                    >
+-                      ✏️ Edit
+-                    </button>
+-                  </td>
+-                </tr>
++                <Fragment key={h.id}>
++                  <tr className="border-t border-cream-deep">
++                    <td className="px-4 py-3 font-medium">{h.hotel_name}</td>
++                    <td className="px-4 py-3 text-ink-soft">{h.location}</td>
++                    <td className="px-4 py-3 text-right">{h.visit_count}</td>
++                    <td className="px-4 py-3 text-right font-medium">
++                      KES {h.total_revenue.toLocaleString()}
++                    </td>
++                    <td className="px-4 py-3 text-right text-ink-soft">
++                      KES {Math.round(h.avg_order_value).toLocaleString()}
++                    </td>
++                    <td className="px-4 py-3 text-ink-soft">{h.tier}</td>
++                    <td className="px-4 py-3">
++                      <span
++                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${TIER_STYLES[h.performance_tier]}`}
++                      >
++                        {h.performance_tier} ({h.performance_score})
++                      </span>
++                    </td>
++                    <td className="px-4 py-3">{h.due_for_visit ? "🚚 Yes" : "—"}</td>
++                    <td className="px-4 py-3 text-ink-soft text-xs whitespace-nowrap">
++                      {activitiesByHotel[h.id]?.[0] ? fmtDate(activitiesByHotel[h.id][0].created_at.slice(0, 10)) : "—"}
++                    </td>
++                    <td className="px-4 py-3 whitespace-nowrap">
++                      <button
++                        onClick={() => startEdit(h)}
++                        className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1 mr-1"
++                      >
++                        ✏️ Edit
++                      </button>
++                      <button
++                        onClick={() => setExpandedId(expandedId === h.id ? null : h.id)}
++                        className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1"
++                      >
++                        📋 Log
++                      </button>
++                    </td>
++                  </tr>
++                  {expandedId === h.id && (
++                    <tr className="border-t border-cream-deep bg-cream-deep/30">
++                      <td className="px-4 py-3" colSpan={10}>
++                        <ActivityLog entityType="hotel" entityId={h.id} entityLabel={h.hotel_name} activities={activitiesByHotel[h.id] ?? []} compact />
++                      </td>
++                    </tr>
++                  )}
++                </Fragment>
+               )
+             )}
+           </tbody>
+diff --git a/app/dashboard/distribution/components/SilentHotelsAlert.tsx b/app/dashboard/distribution/components/SilentHotelsAlert.tsx
+index 5322b7f..62d8483 100644
+--- a/app/dashboard/distribution/components/SilentHotelsAlert.tsx
++++ b/app/dashboard/distribution/components/SilentHotelsAlert.tsx
+@@ -1,35 +1,81 @@
++"use client";
++
++import { useState } from "react";
++import { createClient } from "@/lib/supabase/client";
+ import type { HotelPerformance } from "@/lib/territoryAnalysis";
++import { todayNairobi } from "@/lib/crm";
+ 
+ export default function SilentHotelsAlert({ performance }: { performance: HotelPerformance[] }) {
++  const supabase = createClient();
++  const [creating, setCreating] = useState<string | null>(null);
++  const [created, setCreated] = useState<Set<string>>(new Set());
++
+   const silent = performance
+     .filter((h) => h.performance_tier === "Dormant" || h.performance_tier === "At Risk")
+     .sort((a, b) => (b.days_since_last_restock ?? 0) - (a.days_since_last_restock ?? 0));
+ 
+   if (silent.length === 0) return null;
+ 
++  async function createTask(h: HotelPerformance) {
++    setCreating(h.id);
++    const {
++      data: { user },
++    } = await supabase.auth.getUser();
++    const { data: profile } = await supabase.from("profiles").select("full_name").eq("id", user?.id ?? "").single();
++    const name = profile?.full_name ?? user?.email ?? "";
++
++    // Due tomorrow rather than today — this is a "plan the visit" reminder,
++    // not something to squeeze in immediately.
++    const tomorrow = new Date(`${todayNairobi()}T00:00:00Z`);
++    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
++
++    const { error } = await supabase.from("TASKS").insert({
++      title: `Follow up: ${h.hotel_name} (${h.performance_tier.toLowerCase()})`,
++      notes: `${h.days_since_last_restock !== null ? `${Math.round(h.days_since_last_restock)} days since last refill.` : "Never refilled."} Flagged by the Gone Quiet alert on Distribution.`,
++      due_date: tomorrow.toISOString().slice(0, 10),
++      entity_type: "hotel",
++      entity_id: h.id,
++      entity_label: h.hotel_name,
++      assigned_to: user?.id ?? null,
++      assigned_to_name: name,
++      created_by_name: name,
++    });
++    setCreating(null);
++    if (!error) setCreated((s) => new Set(s).add(h.id));
++  }
++
+   return (
+     <div className="bg-red-50 border border-red-100 rounded-card-lg p-6">
+       <h2 className="font-medium text-red-bright mb-3">🔕 Gone Quiet — Needs a Visit</h2>
+       <div className="space-y-2">
+         {silent.map((h) => (
+-          <div key={h.id} className="flex items-center justify-between bg-white rounded-card px-4 py-2 text-sm">
++          <div key={h.id} className="flex items-center justify-between bg-white rounded-card px-4 py-2 text-sm gap-3">
+             <div>
+               <span className="font-medium">{h.hotel_name}</span>
+               <span className="text-ink-soft ml-2">{h.location}</span>
+             </div>
+-            <div className="text-right">
++            <div className="flex items-center gap-3">
+               <span
+-                className={`px-2 py-0.5 rounded-full text-xs font-medium ${
++                className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${
+                   h.performance_tier === "Dormant" ? "bg-red-100 text-red-bright" : "bg-orange-50 text-orange-700"
+                 }`}
+               >
+                 {h.performance_tier}
+               </span>
+-              <span className="text-ink-soft ml-2">
+-                {h.days_since_last_restock !== null
+-                  ? `${Math.round(h.days_since_last_restock)} days since last refill`
+-                  : "never refilled"}
++              <span className="text-ink-soft whitespace-nowrap">
++                {h.days_since_last_restock !== null ? `${Math.round(h.days_since_last_restock)} days since last refill` : "never refilled"}
+               </span>
++              {created.has(h.id) ? (
++                <span className="text-green-700 text-xs font-medium whitespace-nowrap">✓ Task created</span>
++              ) : (
++                <button
++                  onClick={() => createTask(h)}
++                  disabled={creating === h.id}
++                  className="text-xs bg-maroon hover:bg-red text-cream rounded-card px-2.5 py-1 whitespace-nowrap disabled:opacity-60"
++                >
++                  {creating === h.id ? "…" : "+ Task"}
++                </button>
++              )}
+             </div>
+           </div>
+         ))}
+diff --git a/app/dashboard/distribution/page.tsx b/app/dashboard/distribution/page.tsx
+index 4d93ca9..35c3c82 100644
+--- a/app/dashboard/distribution/page.tsx
++++ b/app/dashboard/distribution/page.tsx
+@@ -1,5 +1,6 @@
+ import { createClient } from "@/lib/supabase/server";
+ import { computeHotelPerformance, computeMamaPerformance } from "@/lib/territoryAnalysis";
++import { fetchAllActivities, type Activity } from "@/lib/crm";
+ import AddHotelForm from "./components/AddHotelForm";
+ import RecordRefillForm from "./components/RecordRefillForm";
+ import PerformanceOverview from "./components/PerformanceOverview";
+@@ -11,16 +12,31 @@ import { REFILL_PRODUCTS } from "./constants";
+ 
+ export const dynamic = "force-dynamic";
+ 
++function groupByEntity(activities: Activity[], type: "hotel" | "mama"): Record<string, Activity[]> {
++  const out: Record<string, Activity[]> = {};
++  for (const a of activities) {
++    if (a.entity_type !== type) continue;
++    (out[a.entity_id] ??= []).push(a);
++  }
++  return out;
++}
++
+ export default async function DistributionPage() {
+   const supabase = createClient();
+ 
+-  const [{ data: hotels }, { data: refills }, { data: mamas }, { data: mamaPurchases }] = await Promise.all([
++  const [{ data: hotels }, { data: refills }, { data: mamas }, { data: mamaPurchases }, activities] = await Promise.all([
+     supabase.from("HOTELS").select("*").order("hotel_name"),
+     supabase.from("HOTEL_REFILLS").select("*").order("refill_date", { ascending: false }),
+     supabase.from("MAMA_MBOGAS").select("*").order("shop_name"),
+     supabase.from("MAMA_MBOGAS_PURCHASES").select("*").order("purchase_date", { ascending: false }),
++    // Returns [] if supabase/crm_schema.sql hasn't been run yet — the Log
++    // buttons still work once someone opens them, they'll just start empty.
++    fetchAllActivities(supabase, 1000),
+   ]);
+ 
++  const activitiesByHotel = groupByEntity(activities, "hotel");
++  const activitiesByMama = groupByEntity(activities, "mama");
++
+   const performance = computeHotelPerformance(hotels ?? [], refills ?? []);
+   const mamaPerformance = computeMamaPerformance(mamas ?? [], mamaPurchases ?? []);
+ 
+@@ -41,7 +57,7 @@ export default async function DistributionPage() {
+           <AddHotelForm />
+           <RecordRefillForm hotels={hotels ?? []} products={REFILL_PRODUCTS} />
+         </div>
+-        <PerformanceOverview performance={performance} />
++        <PerformanceOverview performance={performance} activitiesByHotel={activitiesByHotel} />
+       </div>
+ 
+       <div>
+@@ -50,7 +66,7 @@ export default async function DistributionPage() {
+           <AddMamaForm />
+           <RecordMamaPurchaseForm mamas={mamas ?? []} />
+         </div>
+-        <MamaPerformanceOverview performance={mamaPerformance} />
++        <MamaPerformanceOverview performance={mamaPerformance} activitiesByMama={activitiesByMama} />
+       </div>
+     </div>
+   );
+diff --git a/app/dashboard/page.tsx b/app/dashboard/page.tsx
+index 53be6ca..c74232a 100644
+--- a/app/dashboard/page.tsx
++++ b/app/dashboard/page.tsx
+@@ -6,6 +6,8 @@ import BusinessHealthPanel from "@/components/BusinessHealthPanel";
+ import TopPerformers from "@/components/TopPerformers";
+ import RecentActivity from "@/components/RecentActivity";
+ import TradeHistorySinceLaunch from "@/components/TradeHistorySinceLaunch";
++import TaskWidget from "@/components/crm/TaskWidget";
++import { fetchTasks } from "@/lib/crm";
+ 
+ // Never serve a cached/static snapshot — every sale, restock, or expense
+ // entered should be reflected on the very next load.
+@@ -32,7 +34,7 @@ export default async function DashboardPage() {
+   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user!.id).single();
+   const isOwner = profile?.role === "owner";
+ 
+-  const [sales, { data: expenses }] = await Promise.all([
++  const [sales, { data: expenses }, tasks] = await Promise.all([
+     fetchAllRows<SaleRow>(
+       supabase,
+       "SALES",
+@@ -40,6 +42,9 @@ export default async function DashboardPage() {
+       "Date"
+     ),
+     supabase.from("EXPENSES").select("amount, date, category"),
++    // Returns [] if supabase/crm_schema.sql hasn't been run yet — the
++    // widget below simply doesn't render rather than erroring.
++    fetchTasks(supabase),
+   ]);
+ 
+   // "This month vs last month" is what makes a trend arrow meaningful — an
+@@ -176,6 +181,8 @@ export default async function DashboardPage() {
+         </p>
+       </div>
+ 
++      <TaskWidget tasks={tasks} currentUserId={user!.id} />
++
+       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+         <SummaryCard label="This Month's Balance" value={balanceThisMonth} tone="balance" previousValue={balanceLastMonth} />
+         <SummaryCard label="This Month's Sales" value={salesThisMonth} tone="positive" previousValue={salesLastMonth} />
+diff --git a/app/dashboard/sales/customers/components/B2CCustomersTable.tsx b/app/dashboard/sales/customers/components/B2CCustomersTable.tsx
+index 74d175f..eeeb4eb 100644
+--- a/app/dashboard/sales/customers/components/B2CCustomersTable.tsx
++++ b/app/dashboard/sales/customers/components/B2CCustomersTable.tsx
+@@ -1,7 +1,9 @@
+ "use client";
+ 
+-import { useMemo, useState } from "react";
++import { Fragment, useMemo, useState } from "react";
+ import { fmtDate, type B2CCustomer } from "@/lib/customers";
++import ActivityLog from "@/components/crm/ActivityLog";
++import type { Activity } from "@/lib/crm";
+ 
+ function formatKes(n: number): string {
+   return new Intl.NumberFormat("en-KE", { style: "currency", currency: "KES", maximumFractionDigits: 0 }).format(n);
+@@ -12,9 +14,10 @@ function telHref(phone: string): string {
+   return `tel:${phone.startsWith("0") ? `+254${phone.slice(1)}` : phone.startsWith("254") ? `+${phone}` : phone}`;
+ }
+ 
+-export default function B2CCustomersTable({ customers }: { customers: B2CCustomer[] }) {
++export default function B2CCustomersTable({ customers, activitiesByCustomer = {} }: { customers: B2CCustomer[]; activitiesByCustomer?: Record<string, Activity[]> }) {
+   const [query, setQuery] = useState("");
+   const [newOnly, setNewOnly] = useState(false);
++  const [expanded, setExpanded] = useState<string | null>(null);
+ 
+   const filtered = useMemo(() => {
+     const q = query.trim().toLowerCase();
+@@ -59,30 +62,45 @@ export default function B2CCustomersTable({ customers }: { customers: B2CCustome
+                 <th className="px-4 py-3 font-medium text-right">Visits</th>
+                 <th className="px-4 py-3 font-medium text-right">Spent</th>
+                 <th className="px-4 py-3 font-medium">Last bought</th>
++                <th className="px-4 py-3 font-medium"></th>
+               </tr>
+             </thead>
+             <tbody>
+               {filtered.map((c) => (
+-                <tr key={c.key} className="border-t border-cream-deep align-top">
+-                  <td className="px-4 py-3 font-medium">
+-                    {c.name}
+-                    {c.isNew && <span className="ml-2 text-xs font-semibold bg-gold/20 text-gold-dark rounded-full px-2 py-0.5 whitespace-nowrap">NEW</span>}
+-                  </td>
+-                  <td className="px-4 py-3">
+-                    {c.phone ? (
+-                      <a href={telHref(c.phone)} className="text-maroon hover:underline whitespace-nowrap">
+-                        📞 {c.phone}
+-                      </a>
+-                    ) : (
+-                      <span className="text-ink-soft">—</span>
+-                    )}
+-                  </td>
+-                  <td className="px-4 py-3 text-ink-soft">{c.location ?? "—"}</td>
+-                  <td className="px-4 py-3 text-ink-soft">{c.items.map((i) => `${i.product}${i.quantity > 1 ? ` ×${i.quantity}` : ""}`).join(", ")}</td>
+-                  <td className="px-4 py-3 text-right">{c.visitsInMonth}</td>
+-                  <td className="px-4 py-3 text-right font-medium">{formatKes(c.totalSpentInMonth)}</td>
+-                  <td className="px-4 py-3 text-ink-soft whitespace-nowrap">{fmtDate(c.lastPurchaseDate)}</td>
+-                </tr>
++                <Fragment key={c.key}>
++                  <tr className="border-t border-cream-deep align-top">
++                    <td className="px-4 py-3 font-medium">
++                      {c.name}
++                      {c.isNew && <span className="ml-2 text-xs font-semibold bg-gold/20 text-gold-dark rounded-full px-2 py-0.5 whitespace-nowrap">NEW</span>}
++                    </td>
++                    <td className="px-4 py-3">
++                      {c.phone ? (
++                        <a href={telHref(c.phone)} className="text-maroon hover:underline whitespace-nowrap">
++                          📞 {c.phone}
++                        </a>
++                      ) : (
++                        <span className="text-ink-soft">—</span>
++                      )}
++                    </td>
++                    <td className="px-4 py-3 text-ink-soft">{c.location ?? "—"}</td>
++                    <td className="px-4 py-3 text-ink-soft">{c.items.map((i) => `${i.product}${i.quantity > 1 ? ` ×${i.quantity}` : ""}`).join(", ")}</td>
++                    <td className="px-4 py-3 text-right">{c.visitsInMonth}</td>
++                    <td className="px-4 py-3 text-right font-medium">{formatKes(c.totalSpentInMonth)}</td>
++                    <td className="px-4 py-3 text-ink-soft whitespace-nowrap">{fmtDate(c.lastPurchaseDate)}</td>
++                    <td className="px-4 py-3 whitespace-nowrap">
++                      <button onClick={() => setExpanded(expanded === c.key ? null : c.key)} className="text-xs bg-cream-deep hover:bg-gold/20 rounded-card px-2 py-1">
++                        📋 Log
++                      </button>
++                    </td>
++                  </tr>
++                  {expanded === c.key && (
++                    <tr className="border-t border-cream-deep bg-cream-deep/30">
++                      <td className="px-4 py-3" colSpan={8}>
++                        <ActivityLog entityType="b2c" entityId={c.key} entityLabel={c.name} activities={activitiesByCustomer[c.key] ?? []} compact />
++                      </td>
++                    </tr>
++                  )}
++                </Fragment>
+               ))}
+             </tbody>
+           </table>
+diff --git a/app/dashboard/sales/customers/page.tsx b/app/dashboard/sales/customers/page.tsx
+index bf70034..d038d4d 100644
+--- a/app/dashboard/sales/customers/page.tsx
++++ b/app/dashboard/sales/customers/page.tsx
+@@ -1,6 +1,7 @@
+ import Link from "next/link";
+ import { createClient } from "@/lib/supabase/server";
+ import { currentMonth, fetchB2CCustomers, isValidMonth, monthLabel } from "@/lib/customers";
++import { fetchAllActivities, type Activity } from "@/lib/crm";
+ import CustomerMonthPicker from "./components/CustomerMonthPicker";
+ import B2CCustomersTable from "./components/B2CCustomersTable";
+ 
+@@ -12,7 +13,15 @@ export default async function B2CCustomersPage({ searchParams }: { searchParams:
+ 
+   // RLS on SALES does the access scoping for us: owners get every B2C
+   // customer, reps only get customers from their own sales.
+-  const { customers, newCount } = await fetchB2CCustomers(supabase, month);
++  const [{ customers, newCount }, allActivities] = await Promise.all([
++    fetchB2CCustomers(supabase, month),
++    fetchAllActivities(supabase, 1000),
++  ]);
++  const activitiesByCustomer: Record<string, Activity[]> = {};
++  for (const a of allActivities) {
++    if (a.entity_type !== "b2c") continue;
++    (activitiesByCustomer[a.entity_id] ??= []).push(a);
++  }
+   const totalSpent = customers.reduce((sum, c) => sum + c.totalSpentInMonth, 0);
+ 
+   return (
+@@ -46,7 +55,7 @@ export default async function B2CCustomersPage({ searchParams }: { searchParams:
+         </div>
+       </div>
+ 
+-      <B2CCustomersTable customers={customers} />
++      <B2CCustomersTable customers={customers} activitiesByCustomer={activitiesByCustomer} />
+     </div>
+   );
+ }
+diff --git a/app/dashboard/tasks/components/TaskManager.tsx b/app/dashboard/tasks/components/TaskManager.tsx
+new file mode 100644
+index 0000000..4d0600b
+--- /dev/null
++++ b/app/dashboard/tasks/components/TaskManager.tsx
+@@ -0,0 +1,233 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { useRouter } from "next/navigation";
++import { createClient } from "@/lib/supabase/client";
++import { dueBucket, fmtDate, todayNairobi, type DueBucket, type Task, type TaskPriority } from "@/lib/crm";
++
++type RepOption = { id: string; name: string };
++
++const BUCKET_META: Record<Exclude<DueBucket, "none">, { label: string; tone: string }> = {
++  overdue: { label: "Overdue", tone: "text-red-bright" },
++  today: { label: "Today", tone: "text-gold-dark" },
++  week: { label: "This week", tone: "text-ink" },
++  later: { label: "Later", tone: "text-ink-soft" },
++};
++
++const PRIORITY_DOT: Record<TaskPriority, string> = { high: "bg-red-bright", normal: "bg-gold", low: "bg-ink-soft/40" };
++
++export default function TaskManager({ tasks, reps, currentUserId }: { tasks: Task[]; reps: RepOption[]; currentUserId: string }) {
++  const supabase = createClient();
++  const router = useRouter();
++  const [filter, setFilter] = useState<"mine" | "all" | "done">("mine");
++  const [showForm, setShowForm] = useState(false);
++  const today = todayNairobi();
++
++  const visible = useMemo(() => {
++    if (filter === "done") return tasks.filter((t) => t.status === "done");
++    const open = tasks.filter((t) => t.status === "open");
++    return filter === "mine" ? open.filter((t) => t.assigned_to === currentUserId || t.created_by === currentUserId) : open;
++  }, [tasks, filter, currentUserId]);
++
++  const grouped = useMemo(() => {
++    const buckets: Record<string, Task[]> = { overdue: [], today: [], week: [], later: [], none: [] };
++    for (const t of visible) buckets[t.due_date ? dueBucket(t.due_date, today) : "none"].push(t);
++    return buckets;
++  }, [visible, today]);
++
++  async function toggleDone(t: Task) {
++    const { error } = await supabase.from("TASKS").update({ status: t.status === "open" ? "done" : "open" }).eq("id", t.id);
++    if (!error) router.refresh();
++  }
++
++  async function remove(t: Task) {
++    if (!confirm(`Delete task "${t.title}"?`)) return;
++    const { error } = await supabase.from("TASKS").delete().eq("id", t.id);
++    if (!error) router.refresh();
++  }
++
++  const openCount = tasks.filter((t) => t.status === "open").length;
++  const mineCount = tasks.filter((t) => t.status === "open" && (t.assigned_to === currentUserId || t.created_by === currentUserId)).length;
++
++  return (
++    <div className="space-y-4">
++      <div className="flex flex-wrap items-center gap-2">
++        <button onClick={() => setShowForm((v) => !v)} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium">
++          + New task
++        </button>
++        <div className="ml-auto flex gap-1 text-sm">
++          {(
++            [
++              ["mine", `Mine (${mineCount})`],
++              ["all", `All open (${openCount})`],
++              ["done", "Done"],
++            ] as const
++          ).map(([k, label]) => (
++            <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-card ${filter === k ? "bg-maroon text-cream" : "bg-white shadow-soft text-ink-soft hover:bg-cream-deep"}`}>
++              {label}
++            </button>
++          ))}
++        </div>
++      </div>
++
++      {showForm && <NewTaskForm reps={reps} currentUserId={currentUserId} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); router.refresh(); }} />}
++
++      {visible.length === 0 ? (
++        <div className="bg-white rounded-card-lg shadow-soft p-6 text-ink-soft text-sm">
++          {filter === "done" ? "No completed tasks yet." : "Nothing here — you're caught up."}
++        </div>
++      ) : (
++        (["overdue", "today", "week", "later"] as const)
++          .filter((b) => grouped[b].length > 0)
++          .map((b) => (
++            <div key={b}>
++              <h3 className={`text-sm font-semibold mb-2 ${BUCKET_META[b].tone}`}>
++                {BUCKET_META[b].label} ({grouped[b].length})
++              </h3>
++              <div className="bg-white rounded-card-lg shadow-soft divide-y divide-cream-deep">
++                {grouped[b].map((t) => (
++                  <TaskRow key={t.id} task={t} onToggle={() => toggleDone(t)} onDelete={() => remove(t)} />
++                ))}
++              </div>
++            </div>
++          ))
++      )}
++
++      {filter !== "done" && grouped.none.length > 0 && (
++        <div>
++          <h3 className="text-sm font-semibold mb-2 text-ink-soft">No due date ({grouped.none.length})</h3>
++          <div className="bg-white rounded-card-lg shadow-soft divide-y divide-cream-deep">
++            {grouped.none.map((t) => (
++              <TaskRow key={t.id} task={t} onToggle={() => toggleDone(t)} onDelete={() => remove(t)} />
++            ))}
++          </div>
++        </div>
++      )}
++
++      {filter === "done" && (
++        <div className="bg-white rounded-card-lg shadow-soft divide-y divide-cream-deep">
++          {visible.map((t) => (
++            <TaskRow key={t.id} task={t} onToggle={() => toggleDone(t)} onDelete={() => remove(t)} />
++          ))}
++        </div>
++      )}
++    </div>
++  );
++}
++
++function TaskRow({ task, onToggle, onDelete }: { task: Task; onToggle: () => void; onDelete: () => void }) {
++  return (
++    <div className="flex items-start gap-3 px-4 py-3">
++      <button
++        onClick={onToggle}
++        className={`mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${task.status === "done" ? "bg-green-600 border-green-600 text-white" : "border-ink-soft/40 hover:border-maroon"}`}
++        aria-label={task.status === "done" ? "Mark open" : "Mark done"}
++      >
++        {task.status === "done" && "✓"}
++      </button>
++      <div className="min-w-0 flex-1">
++        <div className="flex items-center gap-2 flex-wrap">
++          <span className={`w-2 h-2 rounded-full ${PRIORITY_DOT[task.priority]}`} title={`${task.priority} priority`} />
++          <span className={`font-medium ${task.status === "done" ? "line-through text-ink-soft" : "text-ink"}`}>{task.title}</span>
++          {task.entity_label && <span className="text-xs bg-cream-deep text-ink-soft rounded-full px-2 py-0.5">{task.entity_label}</span>}
++        </div>
++        {task.notes && <div className="text-sm text-ink-soft mt-0.5">{task.notes}</div>}
++        <div className="text-xs text-ink-soft mt-1 flex flex-wrap gap-x-3">
++          {task.due_date && <span>Due {fmtDate(task.due_date)}</span>}
++          {task.assigned_to_name && <span>Assigned to {task.assigned_to_name}</span>}
++        </div>
++      </div>
++      <button onClick={onDelete} className="text-ink-soft hover:text-red-bright text-xs flex-shrink-0">
++        Delete
++      </button>
++    </div>
++  );
++}
++
++function NewTaskForm({ reps, currentUserId, onClose, onSaved }: { reps: RepOption[]; currentUserId: string; onClose: () => void; onSaved: () => void }) {
++  const supabase = createClient();
++  const [title, setTitle] = useState("");
++  const [notes, setNotes] = useState("");
++  const [dueDate, setDueDate] = useState(todayNairobi());
++  const [priority, setPriority] = useState<TaskPriority>("normal");
++  const [assignedTo, setAssignedTo] = useState(currentUserId);
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  async function save(e: React.FormEvent) {
++    e.preventDefault();
++    if (!title.trim()) {
++      setError("Give the task a title");
++      return;
++    }
++    setSaving(true);
++    const assignedRep = reps.find((r) => r.id === assignedTo);
++    const {
++      data: { user },
++    } = await supabase.auth.getUser();
++    const { data: profile } = await supabase.from("profiles").select("full_name").eq("id", user?.id ?? "").single();
++
++    const { error: dbError } = await supabase.from("TASKS").insert({
++      title: title.trim(),
++      notes: notes.trim() || null,
++      due_date: dueDate || null,
++      priority,
++      assigned_to: assignedTo || null,
++      assigned_to_name: assignedRep?.name ?? null,
++      created_by_name: profile?.full_name ?? user?.email ?? "",
++    });
++    setSaving(false);
++    if (dbError) {
++      setError(dbError.message.includes("TASKS") ? "The CRM tables aren't set up yet — run supabase/crm_schema.sql in Supabase first." : dbError.message);
++      return;
++    }
++    onSaved();
++  }
++
++  return (
++    <form onSubmit={save} className="bg-white rounded-card-lg shadow-soft p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
++      <label className="sm:col-span-2">
++        <span className="block text-xs font-medium text-ink-soft mb-1">Title *</span>
++        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Call Hotel X about their overdue invoice" className="w-full rounded-card border border-cream-deep px-3 py-2 text-sm" />
++      </label>
++      <label className="sm:col-span-2">
++        <span className="block text-xs font-medium text-ink-soft mb-1">Notes</span>
++        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full rounded-card border border-cream-deep px-3 py-2 text-sm" />
++      </label>
++      <label>
++        <span className="block text-xs font-medium text-ink-soft mb-1">Due date</span>
++        <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full rounded-card border border-cream-deep px-3 py-2 text-sm" />
++      </label>
++      <label>
++        <span className="block text-xs font-medium text-ink-soft mb-1">Priority</span>
++        <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)} className="w-full rounded-card border border-cream-deep px-3 py-2 text-sm">
++          <option value="low">Low</option>
++          <option value="normal">Normal</option>
++          <option value="high">High</option>
++        </select>
++      </label>
++      {reps.length > 0 && (
++        <label className="sm:col-span-2">
++          <span className="block text-xs font-medium text-ink-soft mb-1">Assign to</span>
++          <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className="w-full rounded-card border border-cream-deep px-3 py-2 text-sm">
++            <option value="">Unassigned</option>
++            {reps.map((r) => (
++              <option key={r.id} value={r.id}>
++                {r.id === currentUserId ? `${r.name} (me)` : r.name}
++              </option>
++            ))}
++          </select>
++        </label>
++      )}
++      <div className="sm:col-span-2 flex justify-end gap-2 items-center">
++        {error && <span className="text-red-bright text-sm mr-auto">{error}</span>}
++        <button type="button" onClick={onClose} className="px-4 py-2 rounded-card text-sm text-ink-soft hover:bg-cream-deep">
++          Cancel
++        </button>
++        <button type="submit" disabled={saving} className="bg-maroon hover:bg-red text-cream rounded-card px-4 py-2 text-sm font-medium disabled:opacity-60">
++          {saving ? "Saving…" : "Create task"}
++        </button>
++      </div>
++    </form>
++  );
++}
+diff --git a/app/dashboard/tasks/page.tsx b/app/dashboard/tasks/page.tsx
+new file mode 100644
+index 0000000..8bd748e
+--- /dev/null
++++ b/app/dashboard/tasks/page.tsx
+@@ -0,0 +1,49 @@
++import { createClient } from "@/lib/supabase/server";
++import { fetchTasks } from "@/lib/crm";
++import TaskManager from "./components/TaskManager";
++
++export const dynamic = "force-dynamic";
++
++export default async function TasksPage() {
++  const supabase = createClient();
++
++  const {
++    data: { user },
++  } = await supabase.auth.getUser();
++
++  const [tasks, profilesRes] = await Promise.all([
++    fetchTasks(supabase),
++    // Owners can assign to anyone; a rep only sees their own profile row
++    // back from RLS, so the dropdown quietly narrows to "just me" for them.
++    supabase.from("profiles").select("id, full_name").order("full_name"),
++  ]);
++
++  const reps = (profilesRes.data ?? []).map((p) => ({ id: p.id, name: p.full_name ?? "—" }));
++
++  const probe = tasks.length === 0 ? await supabase.from("TASKS").select("id", { head: true, count: "exact" }) : null;
++  if (probe?.error) {
++    return (
++      <div className="space-y-4">
++        <h1 className="text-2xl font-semibold text-maroon">Tasks</h1>
++        <div className="bg-gold/10 border border-gold/30 rounded-card-lg p-5 text-sm text-ink-soft space-y-2">
++          <div className="font-medium text-ink">One-time setup needed</div>
++          <p>
++            The CRM tables aren&apos;t in the database yet. Open the Supabase SQL editor and run{" "}
++            <code className="bg-white px-1 rounded">supabase/crm_schema.sql</code>, then refresh this page.
++          </p>
++          <p className="text-xs">({probe.error.message})</p>
++        </div>
++      </div>
++    );
++  }
++
++  return (
++    <div className="space-y-6">
++      <div>
++        <h1 className="text-2xl font-semibold text-maroon">Tasks</h1>
++        <p className="text-ink-soft text-sm">Follow-ups and reminders — created here or from Distribution, B2C Customers, and Quality & HACCP</p>
++      </div>
++      <TaskManager tasks={tasks} reps={reps} currentUserId={user!.id} />
++    </div>
++  );
++}
+diff --git a/components/Sidebar.tsx b/components/Sidebar.tsx
+index 2c05364..50014c2 100644
+--- a/components/Sidebar.tsx
++++ b/components/Sidebar.tsx
+@@ -17,6 +17,7 @@ const OWNER_ONLY = new Set([
+ 
+ const NAV = [
+   { href: "/dashboard", label: "Dashboard", icon: "📊" },
++  { href: "/dashboard/tasks", label: "Tasks", icon: "✅" },
+   { href: "/dashboard/analytics", label: "Analytics", icon: "📈" },
+   { href: "/dashboard/sales", label: "Sales", icon: "💰" },
+   { href: "/dashboard/expenses", label: "Expenses", icon: "🧾" },
+diff --git a/components/crm/ActivityLog.tsx b/components/crm/ActivityLog.tsx
+new file mode 100644
+index 0000000..4e19095
+--- /dev/null
++++ b/components/crm/ActivityLog.tsx
+@@ -0,0 +1,184 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { useRouter } from "next/navigation";
++import { createClient } from "@/lib/supabase/client";
++import { ACTIVITY_TYPES, fmtDateTime, fmtDate, type Activity, type ActivityType, type EntityType } from "@/lib/crm";
++
++/**
++ * Drop this on any hotel, mama mboga, contact, or B2C customer row to get a
++ * "Log activity" button plus a collapsible timeline of everything logged
++ * against that one entity. Self-contained — fetches its own activities, so
++ * a parent list of 50 hotels doesn't need to preload all of their history.
++ */
++export default function ActivityLog({
++  entityType,
++  entityId,
++  entityLabel,
++  activities: initial,
++  compact = false,
++}: {
++  entityType: EntityType;
++  entityId: string;
++  entityLabel: string;
++  activities: Activity[];
++  compact?: boolean;
++}) {
++  const supabase = createClient();
++  const router = useRouter();
++  const [open, setOpen] = useState(false);
++  const [logging, setLogging] = useState(false);
++  const [type, setType] = useState<ActivityType>("call");
++  const [notes, setNotes] = useState("");
++  const [followUp, setFollowUp] = useState("");
++  const [makeTask, setMakeTask] = useState(false);
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const latest = initial[0];
++  const sorted = useMemo(() => initial, [initial]);
++
++  async function save(e: React.FormEvent) {
++    e.preventDefault();
++    setSaving(true);
++    setError(null);
++
++    const {
++      data: { user },
++    } = await supabase.auth.getUser();
++    const { data: profile } = await supabase.from("profiles").select("full_name").eq("id", user?.id ?? "").single();
++    const loggedByName = profile?.full_name ?? user?.email ?? "";
++
++    const { error: dbError } = await supabase.from("ACTIVITIES").insert({
++      entity_type: entityType,
++      entity_id: entityId,
++      entity_label: entityLabel,
++      activity_type: type,
++      notes: notes.trim() || null,
++      follow_up_date: followUp || null,
++      logged_by_name: loggedByName,
++    });
++    if (dbError) {
++      setSaving(false);
++      setError(dbError.message.includes("ACTIVITIES") ? "The CRM tables aren't set up yet — run supabase/crm_schema.sql in Supabase first." : dbError.message);
++      return;
++    }
++
++    if (followUp && makeTask) {
++      await supabase.from("TASKS").insert({
++        title: `Follow up: ${entityLabel}`,
++        notes: notes.trim() || null,
++        due_date: followUp,
++        entity_type: entityType,
++        entity_id: entityId,
++        entity_label: entityLabel,
++        assigned_to: user?.id ?? null,
++        assigned_to_name: loggedByName,
++        created_by_name: loggedByName,
++      });
++    }
++
++    setSaving(false);
++    setLogging(false);
++    setNotes("");
++    setFollowUp("");
++    setMakeTask(false);
++    setOpen(true);
++    router.refresh();
++  }
++
++  return (
++    <div className={compact ? "text-xs" : "text-sm"}>
++      <div className="flex items-center gap-2 flex-wrap">
++        <button
++          type="button"
++          onClick={() => setOpen((o) => !o)}
++          className={`text-ink-soft hover:text-maroon ${compact ? "text-xs" : "text-sm"}`}
++        >
++          {latest ? (
++            <>
++              🕘 Last: {ACTIVITY_TYPES.find((a) => a.value === latest.activity_type)?.icon} {fmtDate(latest.created_at.slice(0, 10))}
++              {sorted.length > 1 ? ` · ${sorted.length} logged` : ""} {open ? "▲" : "▼"}
++            </>
++          ) : (
++            <>No activity logged yet {open ? "▲" : "▼"}</>
++          )}
++        </button>
++        <button
++          type="button"
++          onClick={() => {
++            setLogging((v) => !v);
++            setOpen(true);
++          }}
++          className="ml-auto bg-maroon hover:bg-red text-cream rounded-card px-2.5 py-1 text-xs font-medium"
++        >
++          + Log activity
++        </button>
++      </div>
++
++      {open && (
++        <div className="mt-2 space-y-2">
++          {logging && (
++            <form onSubmit={save} className="bg-cream-deep/50 rounded-card p-3 space-y-2">
++              <div className="flex flex-wrap gap-2">
++                {ACTIVITY_TYPES.map((a) => (
++                  <button
++                    key={a.value}
++                    type="button"
++                    onClick={() => setType(a.value)}
++                    className={`px-2.5 py-1 rounded-card text-xs ${type === a.value ? "bg-maroon text-cream" : "bg-white text-ink-soft hover:bg-cream"}`}
++                  >
++                    {a.icon} {a.label}
++                  </button>
++                ))}
++              </div>
++              <textarea
++                value={notes}
++                onChange={(e) => setNotes(e.target.value)}
++                placeholder="What happened / what was said…"
++                rows={2}
++                className="w-full rounded-card border border-cream-deep px-2.5 py-1.5 text-xs bg-white"
++              />
++              <div className="flex flex-wrap items-center gap-2">
++                <label className="text-xs text-ink-soft">Follow up on:</label>
++                <input
++                  type="date"
++                  value={followUp}
++                  onChange={(e) => setFollowUp(e.target.value)}
++                  className="rounded-card border border-cream-deep px-2 py-1 text-xs"
++                />
++                {followUp && (
++                  <label className="flex items-center gap-1 text-xs text-ink-soft">
++                    <input type="checkbox" checked={makeTask} onChange={(e) => setMakeTask(e.target.checked)} />
++                    Create a task for this
++                  </label>
++                )}
++                {error && <span className="text-red-bright text-xs basis-full">{error}</span>}
++                <button type="submit" disabled={saving} className="ml-auto bg-maroon hover:bg-red text-cream rounded-card px-3 py-1.5 text-xs font-medium disabled:opacity-60">
++                  {saving ? "Saving…" : "Save"}
++                </button>
++              </div>
++            </form>
++          )}
++
++          {sorted.length > 0 && (
++            <ul className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
++              {sorted.map((a) => (
++                <li key={a.id} className="border-l-2 border-cream-deep pl-2.5">
++                  <div className="flex items-center gap-1.5 text-ink-soft text-xs">
++                    <span>{ACTIVITY_TYPES.find((x) => x.value === a.activity_type)?.icon}</span>
++                    <span className="font-medium text-ink">{ACTIVITY_TYPES.find((x) => x.value === a.activity_type)?.label}</span>
++                    <span>· {fmtDateTime(a.created_at)}</span>
++                    {a.logged_by_name && <span>· {a.logged_by_name}</span>}
++                  </div>
++                  {a.notes && <div className="text-ink-soft">{a.notes}</div>}
++                  {a.follow_up_date && <div className="text-gold-dark text-xs">Follow up: {fmtDate(a.follow_up_date)}</div>}
++                </li>
++              ))}
++            </ul>
++          )}
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/components/crm/TaskWidget.tsx b/components/crm/TaskWidget.tsx
+new file mode 100644
+index 0000000..7ae7565
+--- /dev/null
++++ b/components/crm/TaskWidget.tsx
+@@ -0,0 +1,38 @@
++import Link from "next/link";
++import { dueBucket, fmtDate, openTasks, type Task } from "@/lib/crm";
++
++/** Lightweight — no client JS, just server-rendered counts and a short list. The full board lives at /dashboard/tasks. */
++export default function TaskWidget({ tasks, currentUserId }: { tasks: Task[]; currentUserId: string }) {
++  const mine = openTasks(tasks).filter((t) => t.assigned_to === currentUserId || t.created_by === currentUserId);
++  if (mine.length === 0) return null;
++
++  const overdue = mine.filter((t) => t.due_date && dueBucket(t.due_date) === "overdue");
++  const today = mine.filter((t) => t.due_date && dueBucket(t.due_date) === "today");
++  const upcoming = mine
++    .slice()
++    .sort((a, b) => (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999"))
++    .slice(0, 4);
++
++  return (
++    <Link href="/dashboard/tasks" className="block bg-white rounded-card-lg shadow-soft p-6 hover:shadow-md transition-shadow">
++      <div className="flex items-center justify-between mb-3">
++        <h2 className="text-lg font-medium text-ink">✅ My Tasks</h2>
++        <span className="text-xs text-ink-soft">{mine.length} open →</span>
++      </div>
++      {(overdue.length > 0 || today.length > 0) && (
++        <div className="flex gap-3 text-sm mb-3">
++          {overdue.length > 0 && <span className="text-red-bright font-medium">⚑ {overdue.length} overdue</span>}
++          {today.length > 0 && <span className="text-gold-dark font-medium">📅 {today.length} due today</span>}
++        </div>
++      )}
++      <ul className="space-y-1.5 text-sm">
++        {upcoming.map((t) => (
++          <li key={t.id} className="flex items-center justify-between gap-2">
++            <span className="text-ink truncate">{t.title}</span>
++            <span className="text-ink-soft text-xs whitespace-nowrap">{t.due_date ? fmtDate(t.due_date) : "No date"}</span>
++          </li>
++        ))}
++      </ul>
++    </Link>
++  );
++}
+diff --git a/lib/crm.ts b/lib/crm.ts
+new file mode 100644
+index 0000000..cd6a423
+--- /dev/null
++++ b/lib/crm.ts
+@@ -0,0 +1,155 @@
++import type { SupabaseClient } from "@supabase/supabase-js";
++
++/**
++ * Shared CRM types. An "entity" is whatever an activity or task is about —
++ * a hotel, a mama mboga shop, a CUSTOMER_CONTACTS row, or a B2C customer
++ * (identified by the same key lib/customers.ts uses, e.g. "p:0712345678",
++ * since B2C customers aren't rows in any table). entity_id is text so all
++ * four fit the same column.
++ */
++export type EntityType = "hotel" | "mama" | "contact" | "b2c";
++export type ActivityType = "call" | "visit" | "sms" | "whatsapp" | "email" | "note";
++export type TaskStatus = "open" | "done";
++export type TaskPriority = "low" | "normal" | "high";
++
++export const ACTIVITY_TYPES: { value: ActivityType; label: string; icon: string }[] = [
++  { value: "call", label: "Phone call", icon: "📞" },
++  { value: "visit", label: "In-person visit", icon: "🚶" },
++  { value: "sms", label: "SMS", icon: "💬" },
++  { value: "whatsapp", label: "WhatsApp", icon: "🟢" },
++  { value: "email", label: "Email", icon: "✉️" },
++  { value: "note", label: "Note", icon: "📝" },
++];
++
++export const ENTITY_LABELS: Record<EntityType, string> = {
++  hotel: "Hotel",
++  mama: "Mama Mboga",
++  contact: "Contact",
++  b2c: "B2C Customer",
++};
++
++export type Activity = {
++  id: string;
++  entity_type: EntityType;
++  entity_id: string;
++  entity_label: string;
++  activity_type: ActivityType;
++  notes: string | null;
++  follow_up_date: string | null;
++  logged_by_name: string | null;
++  created_at: string;
++};
++
++export type Task = {
++  id: string;
++  title: string;
++  notes: string | null;
++  due_date: string | null;
++  status: TaskStatus;
++  priority: TaskPriority;
++  entity_type: EntityType | "other" | null;
++  entity_id: string | null;
++  entity_label: string | null;
++  assigned_to: string | null;
++  assigned_to_name: string | null;
++  created_by: string | null;
++  created_by_name: string | null;
++  completed_at: string | null;
++  created_at: string;
++};
++
++// -------------------------------------------------------------- date utils
++
++export function todayNairobi(): string {
++  return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
++}
++
++const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
++export function fmtDate(s: string | null | undefined): string {
++  if (!s) return "—";
++  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
++  if (!m) return s;
++  return `${m[3]}-${MONTHS[Number(m[2]) - 1] ?? m[2]}-${m[1]}`;
++}
++
++export function fmtDateTime(s: string | null | undefined): string {
++  if (!s) return "—";
++  const d = new Date(s);
++  if (isNaN(d.getTime())) return s;
++  return `${fmtDate(s)} · ${d.toLocaleTimeString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit" })}`;
++}
++
++/** Days between today and a date — negative means overdue. */
++export function daysUntil(dateStr: string, today = todayNairobi()): number {
++  return Math.round((new Date(`${dateStr}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime()) / 86400000);
++}
++
++export type DueBucket = "overdue" | "today" | "week" | "later" | "none";
++export function dueBucket(dateStr: string | null, today = todayNairobi()): DueBucket {
++  if (!dateStr) return "none";
++  const d = daysUntil(dateStr, today);
++  if (d < 0) return "overdue";
++  if (d === 0) return "today";
++  if (d <= 7) return "week";
++  return "later";
++}
++
++// ------------------------------------------------------------------ fetch
++
++/** Pages through PostgREST's 1000-row cap. */
++async function fetchAll<T>(supabase: SupabaseClient, table: string, build: (q: ReturnType<SupabaseClient["from"]>) => any): Promise<T[]> {
++  const pageSize = 1000;
++  let all: T[] = [];
++  let offset = 0;
++  while (true) {
++    const { data, error } = await build(supabase.from(table)).range(offset, offset + pageSize - 1);
++    if (error || !data) break;
++    all = all.concat(data as T[]);
++    if (data.length < pageSize) break;
++    offset += pageSize;
++  }
++  return all;
++}
++
++export async function fetchActivities(supabase: SupabaseClient, entityType: EntityType, entityId: string): Promise<Activity[]> {
++  const { data } = await supabase
++    .from("ACTIVITIES")
++    .select("id, entity_type, entity_id, entity_label, activity_type, notes, follow_up_date, logged_by_name, created_at")
++    .eq("entity_type", entityType)
++    .eq("entity_id", entityId)
++    .order("created_at", { ascending: false });
++  return (data as Activity[]) ?? [];
++}
++
++/** Every activity across every entity, most recent first — used for a company-wide activity feed. */
++export async function fetchAllActivities(supabase: SupabaseClient, limit = 200): Promise<Activity[]> {
++  const { data } = await supabase
++    .from("ACTIVITIES")
++    .select("id, entity_type, entity_id, entity_label, activity_type, notes, follow_up_date, logged_by_name, created_at")
++    .order("created_at", { ascending: false })
++    .limit(limit);
++  return (data as Activity[]) ?? [];
++}
++
++/** All tasks visible to the current user (RLS already scopes reps to their own). Paged so a busy list is never silently truncated. */
++export async function fetchTasks(supabase: SupabaseClient): Promise<Task[]> {
++  return fetchAll<Task>(supabase, "TASKS", (q) =>
++    q
++      .select(
++        "id, title, notes, due_date, status, priority, entity_type, entity_id, entity_label, assigned_to, assigned_to_name, created_by, created_by_name, completed_at, created_at"
++      )
++      .order("due_date", { ascending: true, nullsFirst: false })
++  );
++}
++
++export function openTasks(tasks: Task[]): Task[] {
++  return tasks.filter((t) => t.status === "open");
++}
++
++export function overdueCount(tasks: Task[], today = todayNairobi()): number {
++  return openTasks(tasks).filter((t) => t.due_date && daysUntil(t.due_date, today) < 0).length;
++}
++
++export function dueTodayCount(tasks: Task[], today = todayNairobi()): number {
++  return openTasks(tasks).filter((t) => t.due_date && daysUntil(t.due_date, today) === 0).length;
++}
+diff --git a/supabase/crm_schema.sql b/supabase/crm_schema.sql
+new file mode 100644
+index 0000000..b9312d0
+--- /dev/null
++++ b/supabase/crm_schema.sql
+@@ -0,0 +1,114 @@
++-- PennyPal — CRM foundation: activity log + tasks/reminders
++-- Run in the Supabase SQL editor after schema.sql (needs public.is_owner()).
++-- Safe to re-run.
++--
++-- Two tables:
++--   ACTIVITIES — a timestamped log of calls/visits/notes against a hotel,
++--                mama mboga, contact, or B2C customer. Replaces the single
++--                overwritable "notes" field on CUSTOMER_CONTACTS with a
++--                real history nobody can accidentally erase.
++--   TASKS      — "call Hotel X on Thursday" style reminders, assignable to
++--                a rep, with a due date. This is the piece that turns an
++--                alert (Silent Hotels, B2C customer list, QC due-items)
++--                into something with an owner and a deadline.
++--
++-- entity_id is text rather than uuid because it has to point at four
++-- different kinds of thing: a HOTELS.id, a MAMA_MBOGAS.id, a
++-- CUSTOMER_CONTACTS.id — all uuids — OR a B2C customer key like
++-- "p:0712345678" (see lib/customers.ts), which isn't a table row at all.
++-- entity_label is a snapshot of the name at logging time, so the activity
++-- feed and task list render without a join back to four different tables.
++
++create table if not exists public."ACTIVITIES" (
++  id              uuid primary key default gen_random_uuid(),
++  entity_type     text not null check (entity_type in ('hotel', 'mama', 'contact', 'b2c')),
++  entity_id       text not null,
++  entity_label    text not null,
++  activity_type   text not null check (activity_type in ('call', 'visit', 'sms', 'whatsapp', 'email', 'note')),
++  notes           text,
++  follow_up_date  date,
++  logged_by       uuid default auth.uid() references auth.users(id) on delete set null,
++  logged_by_name  text,
++  created_at      timestamptz not null default now()
++);
++
++create index if not exists activities_entity_idx on public."ACTIVITIES" (entity_type, entity_id, created_at desc);
++create index if not exists activities_followup_idx on public."ACTIVITIES" (follow_up_date) where follow_up_date is not null;
++
++-- Same reasoning as Hotels/Mama Mbogas (see schema.sql §5): this is
++-- day-to-day fieldwork any rep does, not sensitive financial data, so any
++-- authenticated user can log and read activities rather than gating it
++-- behind is_owner().
++alter table public."ACTIVITIES" enable row level security;
++drop policy if exists "authenticated read activities" on public."ACTIVITIES";
++create policy "authenticated read activities" on public."ACTIVITIES" for select
++  using (auth.role() = 'authenticated');
++drop policy if exists "authenticated write activities" on public."ACTIVITIES";
++create policy "authenticated write activities" on public."ACTIVITIES" for insert
++  with check (auth.role() = 'authenticated');
++drop policy if exists "authenticated update own activities" on public."ACTIVITIES";
++create policy "authenticated update own activities" on public."ACTIVITIES" for update
++  using (public.is_owner() or logged_by = auth.uid());
++drop policy if exists "authenticated delete own activities" on public."ACTIVITIES";
++create policy "authenticated delete own activities" on public."ACTIVITIES" for delete
++  using (public.is_owner() or logged_by = auth.uid());
++
++create table if not exists public."TASKS" (
++  id                uuid primary key default gen_random_uuid(),
++  title             text not null,
++  notes             text,
++  due_date          date,
++  status            text not null default 'open' check (status in ('open', 'done')),
++  priority          text not null default 'normal' check (priority in ('low', 'normal', 'high')),
++  entity_type       text check (entity_type in ('hotel', 'mama', 'contact', 'b2c', 'other')),
++  entity_id         text,
++  entity_label      text,
++  assigned_to       uuid references auth.users(id) on delete set null,
++  assigned_to_name  text,
++  created_by        uuid default auth.uid() references auth.users(id) on delete set null,
++  created_by_name   text,
++  completed_at      timestamptz,
++  created_at        timestamptz not null default now(),
++  updated_at        timestamptz not null default now()
++);
++
++create index if not exists tasks_assigned_idx on public."TASKS" (assigned_to, status, due_date);
++create index if not exists tasks_due_idx on public."TASKS" (due_date) where status = 'open';
++
++create or replace function public.tasks_touch_updated_at()
++returns trigger language plpgsql as $$
++begin
++  new.updated_at = now();
++  if new.status = 'done' and old.status = 'open' then
++    new.completed_at = now();
++  elsif new.status = 'open' then
++    new.completed_at = null;
++  end if;
++  return new;
++end;
++$$;
++
++drop trigger if exists tasks_touch on public."TASKS";
++create trigger tasks_touch
++  before update on public."TASKS"
++  for each row execute function public.tasks_touch_updated_at();
++
++-- Owners manage every task. A rep sees and can act on a task if they
++-- created it or it's assigned to them — same "own records" shape as
++-- SALES/DISTRIBUTION/SALES_COMMISSIONS elsewhere in schema.sql.
++alter table public."TASKS" enable row level security;
++drop policy if exists "owners manage all tasks" on public."TASKS";
++create policy "owners manage all tasks" on public."TASKS" for all
++  using (public.is_owner()) with check (public.is_owner());
++drop policy if exists "reps read own tasks" on public."TASKS";
++create policy "reps read own tasks" on public."TASKS" for select
++  using (assigned_to = auth.uid() or created_by = auth.uid());
++drop policy if exists "reps create tasks" on public."TASKS";
++create policy "reps create tasks" on public."TASKS" for insert
++  with check (created_by = auth.uid());
++drop policy if exists "reps update own tasks" on public."TASKS";
++create policy "reps update own tasks" on public."TASKS" for update
++  using (assigned_to = auth.uid() or created_by = auth.uid());
++drop policy if exists "reps delete own created tasks" on public."TASKS";
++create policy "reps delete own created tasks" on public."TASKS" for delete
++  using (created_by = auth.uid());
+-- 
+2.43.0
+
