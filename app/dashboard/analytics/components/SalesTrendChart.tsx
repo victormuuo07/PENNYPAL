@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { groupByPeriod, filterByDateRange, lastN, movingAverage, type Period } from "@/lib/analytics";
+import { groupByPeriod, filterByDateRange, lastN, movingAverage, classifySegment, type Period } from "@/lib/analytics";
 
 type Sale = { Date: string; Total: number; Customer_Type: string | null };
 
@@ -25,18 +25,19 @@ export default function SalesTrendChart({ sales }: { sales: Sale[] }) {
 
   const data = useMemo(() => {
     const grouped = groupByPeriod(filtered, (s) => s.Date, period, {
-      b2c: (acc, s) => acc + (s.Customer_Type?.includes("B2C") ? s.Total ?? 0 : 0),
-      b2b: (acc, s) => acc + (s.Customer_Type && !s.Customer_Type.includes("B2C") ? s.Total ?? 0 : 0),
+      b2c: (acc, s) => acc + (classifySegment(s.Customer_Type) === "b2c" ? s.Total ?? 0 : 0),
+      b2b: (acc, s) => acc + (classifySegment(s.Customer_Type) === "b2b" ? s.Total ?? 0 : 0),
+      unclassified: (acc, s) => acc + (classifySegment(s.Customer_Type) === "unclassified" ? s.Total ?? 0 : 0),
     });
     // A manual date range means "show me everything in that range" — only
     // cap to the last N buckets when there's no explicit range set (the
     // default "recent activity" view).
     const rows = from || to ? grouped : lastN(grouped, PERIODS.find((p) => p.value === period)?.count ?? 12);
 
-    // 3-period moving average of total (b2c + b2b) — smooths the trend
-    // regardless of which period granularity is currently selected.
+    // 3-period moving average of total (all three segments) — smooths the
+    // trend regardless of which period granularity is currently selected.
     const window = Math.min(3, rows.length);
-    const ma = movingAverage(rows, (r) => (r.b2c ?? 0) + (r.b2b ?? 0), window);
+    const ma = movingAverage(rows, (r) => (r.b2c ?? 0) + (r.b2b ?? 0) + (r.unclassified ?? 0), window);
     return rows.map((r, i) => ({ ...r, movingAvg: ma[i] }));
   }, [filtered, period, from, to]);
 
@@ -96,6 +97,7 @@ export default function SalesTrendChart({ sales }: { sales: Sale[] }) {
             <Legend />
             <Bar dataKey="b2c" stackId="a" fill="#3b82f6" name="B2C" />
             <Bar dataKey="b2b" stackId="a" fill="#a855f7" name="B2B" />
+            <Bar dataKey="unclassified" stackId="a" fill="#9ca3af" name="Before B2C/B2B split" />
             {showMA && (
               <Line type="monotone" dataKey="movingAvg" stroke="#10b981" strokeWidth={2} dot={false} name="Moving avg" />
             )}

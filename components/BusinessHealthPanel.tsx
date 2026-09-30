@@ -1,4 +1,5 @@
 import { computeHotelPerformance, type Hotel, type HotelRefill } from "@/lib/territoryAnalysis";
+import { classifySegment } from "@/lib/analytics";
 
 type Material = { material_name: string; current_stock_kg: number; reorder_level: number };
 type FinishedGood = { product_type: string; current_stock: number; reorder_level: number };
@@ -27,8 +28,11 @@ export default function BusinessHealthPanel({
   const performance = computeHotelPerformance(hotels, refills);
   const silentHotels = performance.filter((h) => h.performance_tier === "Dormant" || h.performance_tier === "At Risk");
 
-  const b2c = sales.filter((s) => s.Customer_Type?.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
-  const b2b = sales.filter((s) => s.Customer_Type && !s.Customer_Type.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
+  const b2c = sales.filter((s) => classifySegment(s.Customer_Type) === "b2c").reduce((s, x) => s + (x.Total ?? 0), 0);
+  const b2b = sales.filter((s) => classifySegment(s.Customer_Type) === "b2b").reduce((s, x) => s + (x.Total ?? 0), 0);
+  // Sales from before Customer_Type existed — real revenue, shown rather
+  // than silently excluded from both totals (see lib/analytics.ts).
+  const unclassified = sales.filter((s) => classifySegment(s.Customer_Type) === "unclassified").reduce((s, x) => s + (x.Total ?? 0), 0);
 
   const bottlenecks: { icon: string; text: string; severity: "high" | "medium" }[] = [];
   if (lowMaterials.length > 0)
@@ -78,8 +82,8 @@ export default function BusinessHealthPanel({
         </div>
       )}
 
-      {(b2c > 0 || b2b > 0) && (
-        <div className="pt-3 border-t border-cream-deep grid grid-cols-2 gap-4 text-sm">
+      {(b2c > 0 || b2b > 0 || unclassified > 0) && (
+        <div className={`pt-3 border-t border-cream-deep grid gap-4 text-sm ${unclassified > 0 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
           <div>
             <div className="text-ink-soft text-xs">B2C revenue</div>
             <div className="font-semibold text-ink">KES {b2c.toLocaleString()}</div>
@@ -88,6 +92,12 @@ export default function BusinessHealthPanel({
             <div className="text-ink-soft text-xs">B2B revenue (hotels + shops)</div>
             <div className="font-semibold text-ink">KES {b2b.toLocaleString()}</div>
           </div>
+          {unclassified > 0 && (
+            <div>
+              <div className="text-ink-soft text-xs">Before B2C/B2B split</div>
+              <div className="font-semibold text-ink">KES {unclassified.toLocaleString()}</div>
+            </div>
+          )}
         </div>
       )}
     </div>
