@@ -1,0 +1,207 @@
+From bb7b415f94f6553209832cd2448a10775b4fa22c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 30 Sep 2026 07:47:38 +0000
+Subject: [PATCH] Fix pre-split sales disappearing from B2C/B2B breakdowns
+
+---
+ .../analytics/components/SalesTrendChart.tsx  | 14 +++++----
+ .../sales/components/CustomerMixSummary.tsx   | 29 +++++++++++++++----
+ components/BusinessHealthPanel.tsx            | 18 +++++++++---
+ lib/analytics.ts                              | 22 ++++++++++++--
+ 4 files changed, 66 insertions(+), 17 deletions(-)
+
+diff --git a/app/dashboard/analytics/components/SalesTrendChart.tsx b/app/dashboard/analytics/components/SalesTrendChart.tsx
+index b6ccdab..a14fdde 100644
+--- a/app/dashboard/analytics/components/SalesTrendChart.tsx
++++ b/app/dashboard/analytics/components/SalesTrendChart.tsx
+@@ -2,7 +2,7 @@
+ 
+ import { useMemo, useState } from "react";
+ import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+-import { groupByPeriod, filterByDateRange, lastN, movingAverage, type Period } from "@/lib/analytics";
++import { groupByPeriod, filterByDateRange, lastN, movingAverage, classifySegment, type Period } from "@/lib/analytics";
+ 
+ type Sale = { Date: string; Total: number; Customer_Type: string | null };
+ 
+@@ -25,18 +25,19 @@ export default function SalesTrendChart({ sales }: { sales: Sale[] }) {
+ 
+   const data = useMemo(() => {
+     const grouped = groupByPeriod(filtered, (s) => s.Date, period, {
+-      b2c: (acc, s) => acc + (s.Customer_Type?.includes("B2C") ? s.Total ?? 0 : 0),
+-      b2b: (acc, s) => acc + (s.Customer_Type && !s.Customer_Type.includes("B2C") ? s.Total ?? 0 : 0),
++      b2c: (acc, s) => acc + (classifySegment(s.Customer_Type) === "b2c" ? s.Total ?? 0 : 0),
++      b2b: (acc, s) => acc + (classifySegment(s.Customer_Type) === "b2b" ? s.Total ?? 0 : 0),
++      unclassified: (acc, s) => acc + (classifySegment(s.Customer_Type) === "unclassified" ? s.Total ?? 0 : 0),
+     });
+     // A manual date range means "show me everything in that range" — only
+     // cap to the last N buckets when there's no explicit range set (the
+     // default "recent activity" view).
+     const rows = from || to ? grouped : lastN(grouped, PERIODS.find((p) => p.value === period)?.count ?? 12);
+ 
+-    // 3-period moving average of total (b2c + b2b) — smooths the trend
+-    // regardless of which period granularity is currently selected.
++    // 3-period moving average of total (all three segments) — smooths the
++    // trend regardless of which period granularity is currently selected.
+     const window = Math.min(3, rows.length);
+-    const ma = movingAverage(rows, (r) => (r.b2c ?? 0) + (r.b2b ?? 0), window);
++    const ma = movingAverage(rows, (r) => (r.b2c ?? 0) + (r.b2b ?? 0) + (r.unclassified ?? 0), window);
+     return rows.map((r, i) => ({ ...r, movingAvg: ma[i] }));
+   }, [filtered, period, from, to]);
+ 
+@@ -96,6 +97,7 @@ export default function SalesTrendChart({ sales }: { sales: Sale[] }) {
+             <Legend />
+             <Bar dataKey="b2c" stackId="a" fill="#3b82f6" name="B2C" />
+             <Bar dataKey="b2b" stackId="a" fill="#a855f7" name="B2B" />
++            <Bar dataKey="unclassified" stackId="a" fill="#9ca3af" name="Before B2C/B2B split" />
+             {showMA && (
+               <Line type="monotone" dataKey="movingAvg" stroke="#10b981" strokeWidth={2} dot={false} name="Moving avg" />
+             )}
+diff --git a/app/dashboard/sales/components/CustomerMixSummary.tsx b/app/dashboard/sales/components/CustomerMixSummary.tsx
+index 4e6d1a3..8084338 100644
+--- a/app/dashboard/sales/components/CustomerMixSummary.tsx
++++ b/app/dashboard/sales/components/CustomerMixSummary.tsx
+@@ -1,11 +1,17 @@
++import { classifySegment } from "@/lib/analytics";
++
+ type Sale = { Total: number; Customer_Type: string | null };
+ 
+ export default function CustomerMixSummary({ sales }: { sales: Sale[] }) {
+-  const b2c = sales.filter((s) => s.Customer_Type?.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
+-  const b2b = sales.filter((s) => s.Customer_Type && !s.Customer_Type.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
+-  const total = b2c + b2b;
++  const b2c = sales.filter((s) => classifySegment(s.Customer_Type) === "b2c").reduce((s, x) => s + (x.Total ?? 0), 0);
++  const b2b = sales.filter((s) => classifySegment(s.Customer_Type) === "b2b").reduce((s, x) => s + (x.Total ?? 0), 0);
++  // Sales recorded before Customer_Type existed — real revenue, kept
++  // separate rather than guessed into B2C or B2B (see lib/analytics.ts).
++  const unclassified = sales.filter((s) => classifySegment(s.Customer_Type) === "unclassified").reduce((s, x) => s + (x.Total ?? 0), 0);
++  const total = b2c + b2b + unclassified;
+   const b2cPct = total > 0 ? Math.round((b2c / total) * 100) : 0;
+-  const b2bPct = total > 0 ? 100 - b2cPct : 0;
++  const b2bPct = total > 0 ? Math.round((b2b / total) * 100) : 0;
++  const unclassifiedPct = total > 0 ? 100 - b2cPct - b2bPct : 0;
+ 
+   if (total === 0) return null;
+ 
+@@ -15,8 +21,9 @@ export default function CustomerMixSummary({ sales }: { sales: Sale[] }) {
+       <div className="flex h-6 rounded-full overflow-hidden mb-3">
+         <div className="bg-blue-500" style={{ width: `${b2cPct}%` }} />
+         <div className="bg-purple-500" style={{ width: `${b2bPct}%` }} />
++        {unclassifiedPct > 0 && <div className="bg-gray-400" style={{ width: `${unclassifiedPct}%` }} />}
+       </div>
+-      <div className="grid grid-cols-2 gap-4 text-sm">
++      <div className={`grid gap-4 text-sm ${unclassifiedPct > 0 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
+         <div>
+           <div className="flex items-center gap-2">
+             <span className="w-2.5 h-2.5 rounded-full bg-blue-500" />
+@@ -35,11 +42,23 @@ export default function CustomerMixSummary({ sales }: { sales: Sale[] }) {
+             KES {b2b.toLocaleString()} <span className="text-ink-soft font-normal">({b2bPct}%)</span>
+           </div>
+         </div>
++        {unclassifiedPct > 0 && (
++          <div>
++            <div className="flex items-center gap-2">
++              <span className="w-2.5 h-2.5 rounded-full bg-gray-400" />
++              <span className="text-ink-soft">Before B2C/B2B split</span>
++            </div>
++            <div className="font-semibold text-ink mt-1">
++              KES {unclassified.toLocaleString()} <span className="text-ink-soft font-normal">({unclassifiedPct}%)</span>
++            </div>
++          </div>
++        )}
+       </div>
+       <p className="text-xs text-ink-soft mt-3">
+         {b2b > b2c
+           ? "B2B (hotels & shops) is generating more revenue than direct consumer sales."
+           : "Direct consumer (B2C) sales are outpacing B2B — worth checking if your sales reps' hotel/shop pipeline needs more attention."}
++        {unclassifiedPct > 0 && " Older sales recorded before the B2C/B2B split can't be reclassified automatically — edit them individually if you want them counted on one side."}
+       </p>
+     </div>
+   );
+diff --git a/components/BusinessHealthPanel.tsx b/components/BusinessHealthPanel.tsx
+index 3b4d791..e6e26cb 100644
+--- a/components/BusinessHealthPanel.tsx
++++ b/components/BusinessHealthPanel.tsx
+@@ -1,4 +1,5 @@
+ import { computeHotelPerformance, type Hotel, type HotelRefill } from "@/lib/territoryAnalysis";
++import { classifySegment } from "@/lib/analytics";
+ 
+ type Material = { material_name: string; current_stock_kg: number; reorder_level: number };
+ type FinishedGood = { product_type: string; current_stock: number; reorder_level: number };
+@@ -27,8 +28,11 @@ export default function BusinessHealthPanel({
+   const performance = computeHotelPerformance(hotels, refills);
+   const silentHotels = performance.filter((h) => h.performance_tier === "Dormant" || h.performance_tier === "At Risk");
+ 
+-  const b2c = sales.filter((s) => s.Customer_Type?.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
+-  const b2b = sales.filter((s) => s.Customer_Type && !s.Customer_Type.includes("B2C")).reduce((s, x) => s + (x.Total ?? 0), 0);
++  const b2c = sales.filter((s) => classifySegment(s.Customer_Type) === "b2c").reduce((s, x) => s + (x.Total ?? 0), 0);
++  const b2b = sales.filter((s) => classifySegment(s.Customer_Type) === "b2b").reduce((s, x) => s + (x.Total ?? 0), 0);
++  // Sales from before Customer_Type existed — real revenue, shown rather
++  // than silently excluded from both totals (see lib/analytics.ts).
++  const unclassified = sales.filter((s) => classifySegment(s.Customer_Type) === "unclassified").reduce((s, x) => s + (x.Total ?? 0), 0);
+ 
+   const bottlenecks: { icon: string; text: string; severity: "high" | "medium" }[] = [];
+   if (lowMaterials.length > 0)
+@@ -78,8 +82,8 @@ export default function BusinessHealthPanel({
+         </div>
+       )}
+ 
+-      {(b2c > 0 || b2b > 0) && (
+-        <div className="pt-3 border-t border-cream-deep grid grid-cols-2 gap-4 text-sm">
++      {(b2c > 0 || b2b > 0 || unclassified > 0) && (
++        <div className={`pt-3 border-t border-cream-deep grid gap-4 text-sm ${unclassified > 0 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
+           <div>
+             <div className="text-ink-soft text-xs">B2C revenue</div>
+             <div className="font-semibold text-ink">KES {b2c.toLocaleString()}</div>
+@@ -88,6 +92,12 @@ export default function BusinessHealthPanel({
+             <div className="text-ink-soft text-xs">B2B revenue (hotels + shops)</div>
+             <div className="font-semibold text-ink">KES {b2b.toLocaleString()}</div>
+           </div>
++          {unclassified > 0 && (
++            <div>
++              <div className="text-ink-soft text-xs">Before B2C/B2B split</div>
++              <div className="font-semibold text-ink">KES {unclassified.toLocaleString()}</div>
++            </div>
++          )}
+         </div>
+       )}
+     </div>
+diff --git a/lib/analytics.ts b/lib/analytics.ts
+index bd6abea..9532b62 100644
+--- a/lib/analytics.ts
++++ b/lib/analytics.ts
+@@ -86,8 +86,7 @@ export function lastN<T>(rows: T[], n: number): T[] {
+   return rows.slice(-n);
+ }
+ 
+-/**
+- * Simple trailing moving average over `window` points (including the
++/** Simple trailing moving average over `window` points (including the
+  * current one). Standard way to smooth out a noisy trend line so the
+  * underlying direction is easier to see than the raw up-and-down.
+  */
+@@ -99,3 +98,22 @@ export function movingAverage<T>(data: T[], getValue: (row: T) => number, window
+     return sum / slice.length;
+   });
+ }
++
++/**
++ * Classifies a sale by Customer_Type for B2C/B2B breakdowns.
++ *
++ * The Customer_Type field was only added when sales were first split into
++ * B2C/B2B — sales recorded before that have Customer_Type = null. Those are
++ * real revenue, not B2C or B2B, and previously several charts silently
++ * dropped them (a null didn't match the B2C check OR the "not B2C" B2B
++ * check, so it landed in neither bucket). This returns "unclassified"
++ * instead, so every caller can choose to show that revenue rather than
++ * lose it — never guess which side of the split it belongs to.
++ */
++export type CustomerSegment = "b2c" | "b2b" | "unclassified";
++
++export function classifySegment(customerType: string | null | undefined): CustomerSegment {
++  if (!customerType) return "unclassified";
++  return customerType.includes("B2C") ? "b2c" : "b2b";
++}
++
+-- 
+2.43.0
+

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import SalesTable from "./components/SalesTable";
 import AddSaleForm from "./components/AddSaleForm";
@@ -48,12 +49,20 @@ export default async function SalesPage() {
         </p>
       </div>
 
-      <AddSaleForm
-        salesPersonId={profile?.sales_person_id ?? null}
-        salesPersonName={profile?.full_name ?? ""}
-        hotels={hotels ?? []}
-        mamas={mamas ?? []}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <AddSaleForm
+          salesPersonId={profile?.sales_person_id ?? null}
+          salesPersonName={profile?.full_name ?? ""}
+          hotels={hotels ?? []}
+          mamas={mamas ?? []}
+        />
+        <Link
+          href="/dashboard/sales/customers"
+          className="bg-white shadow-soft hover:bg-cream-deep text-maroon rounded-card px-4 py-2 text-sm font-medium"
+        >
+          📞 B2C Customers to Call
+        </Link>
+      </div>
 
       {isOwner && <CustomerMixSummary sales={rows} />}
       <CreditTracker sales={rows} />

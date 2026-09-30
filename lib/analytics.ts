@@ -86,8 +86,7 @@ export function lastN<T>(rows: T[], n: number): T[] {
   return rows.slice(-n);
 }
 
-/**
- * Simple trailing moving average over `window` points (including the
+/** Simple trailing moving average over `window` points (including the
  * current one). Standard way to smooth out a noisy trend line so the
  * underlying direction is easier to see than the raw up-and-down.
  */
@@ -99,3 +98,22 @@ export function movingAverage<T>(data: T[], getValue: (row: T) => number, window
     return sum / slice.length;
   });
 }
+
+/**
+ * Classifies a sale by Customer_Type for B2C/B2B breakdowns.
+ *
+ * The Customer_Type field was only added when sales were first split into
+ * B2C/B2B — sales recorded before that have Customer_Type = null. Those are
+ * real revenue, not B2C or B2B, and previously several charts silently
+ * dropped them (a null didn't match the B2C check OR the "not B2C" B2B
+ * check, so it landed in neither bucket). This returns "unclassified"
+ * instead, so every caller can choose to show that revenue rather than
+ * lose it — never guess which side of the split it belongs to.
+ */
+export type CustomerSegment = "b2c" | "b2b" | "unclassified";
+
+export function classifySegment(customerType: string | null | undefined): CustomerSegment {
+  if (!customerType) return "unclassified";
+  return customerType.includes("B2C") ? "b2c" : "b2b";
+}
+
