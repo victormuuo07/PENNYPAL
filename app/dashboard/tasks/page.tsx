@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { fetchTasks } from "@/lib/crm";
 import TaskManager from "./components/TaskManager";
+import CalendarFeedPanel from "./components/CalendarFeedPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,7 @@ export default async function TasksPage() {
         <h1 className="text-2xl font-semibold text-maroon">Tasks</h1>
         <p className="text-ink-soft text-sm">Follow-ups and reminders — created here or from Distribution, B2C Customers, and Quality & HACCP</p>
       </div>
+      <CalendarFeedPanel />
       <TaskManager tasks={tasks} reps={reps} currentUserId={user!.id} />
     </div>
   );
