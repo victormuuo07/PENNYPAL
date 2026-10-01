@@ -3,3 +3,5 @@ node_modules/
 .env
 .env.local
 .env.*.local
+# Development patch files — never meant to be committed
+*.patch
