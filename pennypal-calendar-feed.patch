@@ -1,0 +1,351 @@
+From a8816429f1fc7b708c4399baef1ddaaf63e3b5cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 04:16:18 +0000
+Subject: [PATCH] Add subscribable calendar feed (.ics) for tasks
+
+---
+ app/api/calendar/[token]/feed.ics/route.ts    |  61 ++++++++++
+ .../tasks/components/CalendarFeedPanel.tsx    | 108 ++++++++++++++++++
+ app/dashboard/tasks/page.tsx                  |   2 +
+ lib/ics.ts                                    |  93 +++++++++++++++
+ supabase/calendar_schema.sql                  |  25 ++++
+ 5 files changed, 289 insertions(+)
+ create mode 100644 app/api/calendar/[token]/feed.ics/route.ts
+ create mode 100644 app/dashboard/tasks/components/CalendarFeedPanel.tsx
+ create mode 100644 lib/ics.ts
+ create mode 100644 supabase/calendar_schema.sql
+
+diff --git a/app/api/calendar/[token]/feed.ics/route.ts b/app/api/calendar/[token]/feed.ics/route.ts
+new file mode 100644
+index 0000000..2978fb2
+--- /dev/null
++++ b/app/api/calendar/[token]/feed.ics/route.ts
+@@ -0,0 +1,61 @@
++import { NextResponse } from "next/server";
++import { createAdminClient } from "@/lib/supabase/admin";
++import { buildIcsFeed, type IcsEvent } from "@/lib/ics";
++
++export const dynamic = "force-dynamic";
++
++/**
++ * Public, unauthenticated feed — protected only by the token being
++ * unguessable (see supabase/calendar_schema.sql for the security model).
++ * Calendar apps fetch this on their own schedule with no login, so this
++ * route can't require a Supabase session; it uses the admin client to look
++ * up which user the token belongs to, then reads only that user's tasks.
++ */
++export async function GET(_req: Request, { params }: { params: { token: string } }) {
++  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++  if (!uuidPattern.test(params.token)) {
++    return new NextResponse("Not found", { status: 404 });
++  }
++
++  let admin;
++  try {
++    admin = createAdminClient();
++  } catch {
++    return new NextResponse("Calendar feed is not configured on this deployment", { status: 500 });
++  }
++
++  const { data: feed } = await admin.from("CALENDAR_FEEDS").select("user_id").eq("token", params.token).maybeSingle();
++  if (!feed) {
++    return new NextResponse("Not found", { status: 404 });
++  }
++
++  const [{ data: profile }, { data: tasks }] = await Promise.all([
++    admin.from("profiles").select("full_name").eq("id", feed.user_id).single(),
++    admin
++      .from("TASKS")
++      .select("id, title, notes, due_date, status, priority, entity_label, updated_at")
++      .or(`assigned_to.eq.${feed.user_id},created_by.eq.${feed.user_id}`)
++      .not("due_date", "is", null)
++      .order("due_date", { ascending: true }),
++  ]);
++
++  const events: IcsEvent[] = (tasks ?? []).map((t) => ({
++    uid: t.id,
++    date: t.due_date as string,
++    summary: `${t.status === "done" ? "✅ " : ""}${t.title}${t.priority === "high" ? " (high priority)" : ""}`,
++    description: [t.entity_label, t.notes].filter(Boolean).join(" — ") || undefined,
++    updatedAt: t.updated_at,
++  }));
++
++  const calendarName = `PennyPal Tasks — ${profile?.full_name ?? "SpiseUp"}`;
++  const body = buildIcsFeed(calendarName, events);
++
++  return new NextResponse(body, {
++    status: 200,
++    headers: {
++      "Content-Type": "text/calendar; charset=utf-8",
++      "Content-Disposition": 'inline; filename="pennypal-tasks.ics"',
++      "Cache-Control": "no-cache, max-age=0",
++    },
++  });
++}
+diff --git a/app/dashboard/tasks/components/CalendarFeedPanel.tsx b/app/dashboard/tasks/components/CalendarFeedPanel.tsx
+new file mode 100644
+index 0000000..3cce579
+--- /dev/null
++++ b/app/dashboard/tasks/components/CalendarFeedPanel.tsx
+@@ -0,0 +1,108 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { createClient } from "@/lib/supabase/client";
++
++export default function CalendarFeedPanel() {
++  const supabase = createClient();
++  const [token, setToken] = useState<string | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [busy, setBusy] = useState(false);
++  const [copied, setCopied] = useState(false);
++  const [open, setOpen] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    (async () => {
++      const {
++        data: { user },
++      } = await supabase.auth.getUser();
++      if (!user) return;
++
++      const { data, error: selectError } = await supabase.from("CALENDAR_FEEDS").select("token").eq("user_id", user.id).maybeSingle();
++      if (selectError) {
++        setError(selectError.message.includes("CALENDAR_FEEDS") ? "The calendar feed table isn't set up yet — run supabase/calendar_schema.sql in Supabase first." : selectError.message);
++        setLoading(false);
++        return;
++      }
++      if (data) {
++        setToken(data.token);
++      } else {
++        const { data: created, error: insertError } = await supabase.from("CALENDAR_FEEDS").insert({ user_id: user.id }).select("token").single();
++        if (insertError) setError(insertError.message);
++        else setToken(created.token);
++      }
++      setLoading(false);
++    })();
++  }, []); // eslint-disable-line react-hooks/exhaustive-deps
++
++  async function regenerate() {
++    if (!confirm("Regenerate your calendar link? The old link will stop working, so you'll need to re-subscribe on any device using it.")) return;
++    setBusy(true);
++    const {
++      data: { user },
++    } = await supabase.auth.getUser();
++    const { data, error: updateError } = await supabase
++      .from("CALENDAR_FEEDS")
++      .update({ token: crypto.randomUUID() })
++      .eq("user_id", user!.id)
++      .select("token")
++      .single();
++    setBusy(false);
++    if (!updateError) setToken(data.token);
++  }
++
++  function copy(url: string) {
++    navigator.clipboard.writeText(url);
++    setCopied(true);
++    setTimeout(() => setCopied(false), 2000);
++  }
++
++  if (loading) return null;
++  if (error) {
++    return <div className="bg-gold/10 border border-gold/30 rounded-card-lg px-5 py-3 text-sm text-ink-soft">{error}</div>;
++  }
++  if (!token) return null;
++
++  const url = typeof window !== "undefined" ? `${window.location.origin}/api/calendar/${token}/feed.ics` : "";
++
++  return (
++    <div className="bg-white rounded-card-lg shadow-soft">
++      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-maroon">
++        <span>📅 Add my tasks to Google/Apple/Outlook Calendar</span>
++        <span className="text-ink-soft">{open ? "▲" : "▼"}</span>
++      </button>
++      {open && (
++        <div className="px-5 pb-5 space-y-3 text-sm">
++          <div className="flex flex-wrap items-center gap-2">
++            <input readOnly value={url} onFocus={(e) => e.target.select()} className="flex-1 min-w-[16rem] rounded-card border border-cream-deep px-3 py-2 text-xs bg-cream-deep/40 font-mono" />
++            <button onClick={() => copy(url)} className="bg-maroon hover:bg-red text-cream rounded-card px-3 py-2 text-xs font-medium whitespace-nowrap">
++              {copied ? "Copied ✓" : "Copy link"}
++            </button>
++          </div>
++          <details className="text-ink-soft">
++            <summary className="cursor-pointer hover:text-maroon">How to subscribe</summary>
++            <ul className="list-disc pl-5 mt-2 space-y-1">
++              <li>
++                <strong>Google Calendar (computer):</strong> Settings → Add calendar → From URL → paste the link.
++              </li>
++              <li>
++                <strong>Apple Calendar (iPhone/Mac):</strong> Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar → paste the link.
++              </li>
++              <li>
++                <strong>Outlook:</strong> Add calendar → Subscribe from web → paste the link.
++              </li>
++            </ul>
++          </details>
++          <p className="text-xs text-ink-soft">
++            This link only shows your own task titles and due dates — it updates automatically, though Google in particular may only refresh it every several hours. Anyone with this exact
++            link could see your tasks, so don&apos;t post it publicly.{" "}
++            <button onClick={regenerate} disabled={busy} className="text-maroon hover:underline disabled:opacity-60">
++              {busy ? "Regenerating…" : "Regenerate link"}
++            </button>
++          </p>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/app/dashboard/tasks/page.tsx b/app/dashboard/tasks/page.tsx
+index 8bd748e..dd4875e 100644
+--- a/app/dashboard/tasks/page.tsx
++++ b/app/dashboard/tasks/page.tsx
+@@ -1,6 +1,7 @@
+ import { createClient } from "@/lib/supabase/server";
+ import { fetchTasks } from "@/lib/crm";
+ import TaskManager from "./components/TaskManager";
++import CalendarFeedPanel from "./components/CalendarFeedPanel";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -43,6 +44,7 @@ export default async function TasksPage() {
+         <h1 className="text-2xl font-semibold text-maroon">Tasks</h1>
+         <p className="text-ink-soft text-sm">Follow-ups and reminders — created here or from Distribution, B2C Customers, and Quality & HACCP</p>
+       </div>
++      <CalendarFeedPanel />
+       <TaskManager tasks={tasks} reps={reps} currentUserId={user!.id} />
+     </div>
+   );
+diff --git a/lib/ics.ts b/lib/ics.ts
+new file mode 100644
+index 0000000..36d99c0
+--- /dev/null
++++ b/lib/ics.ts
+@@ -0,0 +1,93 @@
++/**
++ * Minimal iCalendar (RFC 5545) writer — just enough to publish a read-only
++ * feed of PennyPal tasks that Google/Apple/Outlook Calendar can subscribe
++ * to. Not a general ICS library: no recurrence, no time zones beyond UTC
++ * timestamps, no alarms — tasks only ever need a title, a due date, and a
++ * description.
++ */
++
++export type IcsEvent = {
++  /** Stable across regenerations of the feed — reusing a task's id means a
++   *  subscribed calendar updates the existing event instead of duplicating
++   *  it when the feed refreshes. */
++  uid: string;
++  /** All-day event date, YYYY-MM-DD. */
++  date: string;
++  summary: string;
++  description?: string;
++  /** When this event's data last changed — lets calendar apps skip
++   *  re-rendering unchanged events on refresh. */
++  updatedAt: string; // ISO timestamp
++};
++
++function escapeText(s: string): string {
++  // RFC 5545 §3.3.11: backslash, semicolon, comma and newlines must be escaped.
++  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
++}
++
++/** Lines over 75 octets must be "folded" with CRLF + a leading space. */
++function foldLine(line: string): string {
++  const bytes = Buffer.byteLength(line, "utf8");
++  if (bytes <= 75) return line;
++  const out: string[] = [];
++  let chunk = "";
++  let chunkBytes = 0;
++  for (const ch of line) {
++    const b = Buffer.byteLength(ch, "utf8");
++    if (chunkBytes + b > 74) {
++      out.push(chunk);
++      chunk = "";
++      chunkBytes = 0;
++    }
++    chunk += ch;
++    chunkBytes += b;
++  }
++  if (chunk) out.push(chunk);
++  return out.join("\r\n ");
++}
++
++function dateStamp(d: string): string {
++  return d.replace(/-/g, "");
++}
++
++/** YYYYMMDD one day after the given YYYY-MM-DD — all-day events use an exclusive DTEND. */
++function nextDay(dateStr: string): string {
++  const d = new Date(`${dateStr}T00:00:00Z`);
++  d.setUTCDate(d.getUTCDate() + 1);
++  return dateStamp(d.toISOString().slice(0, 10));
++}
++
++function toUtcStamp(iso: string): string {
++  return new Date(iso).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
++}
++
++export function buildIcsFeed(calendarName: string, events: IcsEvent[]): string {
++  const lines: string[] = [
++    "BEGIN:VCALENDAR",
++    "VERSION:2.0",
++    "PRODID:-//PennyPal//Task Calendar Feed//EN",
++    "CALSCALE:GREGORIAN",
++    "METHOD:PUBLISH",
++    `X-WR-CALNAME:${escapeText(calendarName)}`,
++    // Hints how often to poll — most clients treat this as a minimum, not a
++    // guarantee (Google in particular may refresh far less often).
++    "X-PUBLISHED-TTL:PT1H",
++    "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
++  ];
++
++  for (const e of events) {
++    lines.push(
++      "BEGIN:VEVENT",
++      `UID:${e.uid}@pennypal.spiseup`,
++      `DTSTAMP:${toUtcStamp(e.updatedAt)}`,
++      `DTSTART;VALUE=DATE:${dateStamp(e.date)}`,
++      `DTEND;VALUE=DATE:${nextDay(e.date)}`,
++      `SUMMARY:${escapeText(e.summary)}`
++    );
++    if (e.description) lines.push(`DESCRIPTION:${escapeText(e.description)}`);
++    lines.push("END:VEVENT");
++  }
++
++  lines.push("END:VCALENDAR");
++  return lines.map(foldLine).join("\r\n") + "\r\n";
++}
+diff --git a/supabase/calendar_schema.sql b/supabase/calendar_schema.sql
+new file mode 100644
+index 0000000..fb12364
+--- /dev/null
++++ b/supabase/calendar_schema.sql
+@@ -0,0 +1,25 @@
++-- PennyPal — calendar feed tokens
++-- Run in the Supabase SQL editor after crm_schema.sql. Safe to re-run.
++--
++-- One row per user holding an unguessable token. The token, not a login
++-- session, is what protects the feed: Google/Apple/Outlook Calendar poll a
++-- plain URL on a schedule with no way to send a password or session
++-- cookie, so "possession of this exact link" has to be the credential —
++-- the same model Todoist, Asana and most "subscribe by URL" calendar
++-- exports use. Treat the URL itself as a secret; anyone with it can read
++-- that person's task titles and due dates (nothing else). "Regenerate
++-- link" invalidates the old URL immediately if it ever leaks.
++
++create table if not exists public."CALENDAR_FEEDS" (
++  user_id    uuid primary key references auth.users(id) on delete cascade,
++  token      uuid not null unique default gen_random_uuid(),
++  created_at timestamptz not null default now()
++);
++
++alter table public."CALENDAR_FEEDS" enable row level security;
++drop policy if exists "owners manage all calendar feeds" on public."CALENDAR_FEEDS";
++create policy "owners manage all calendar feeds" on public."CALENDAR_FEEDS" for all
++  using (public.is_owner()) with check (public.is_owner());
++drop policy if exists "user manages own calendar feed" on public."CALENDAR_FEEDS";
++create policy "user manages own calendar feed" on public."CALENDAR_FEEDS" for all
++  using (user_id = auth.uid()) with check (user_id = auth.uid());
+-- 
+2.43.0
+
