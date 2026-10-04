@@ -37,8 +37,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "phone_number and message are required" }, { status: 400 });
   }
 
-  const apiKey = process.env.AFRICASTALKING_API_KEY;
-  const username = process.env.AFRICASTALKING_USERNAME;
+  const apiKey = process.env.AFRICASTALKING_API_KEY?.trim().replace(/^["']|["']$/g, "");
+  const username = process.env.AFRICASTALKING_USERNAME?.trim().replace(/^["']|["']$/g, "");
 
   // The "sandbox" app username only works against the sandbox host; live
   // usernames only work against the live host. Mixing them gives a 401.
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
       // AT returns HTTP 201 on accept; status is "Success" (some accounts: "Sent")
       delivered = res.ok && (recipient?.status === "Success" || recipient?.status === "Sent");
       if (!delivered) {
-        errorMessage = `AT ${res.status} @ ${baseUrl} (to ${to}): ${recipient?.status ?? ""} ${
+        errorMessage = `AT ${res.status} @ ${baseUrl} (user=${username}, keyLen=${apiKey?.length}, keyStart=${apiKey?.slice(0, 4)}, to ${to}): ${recipient?.status ?? ""} ${
           data ? data?.SMSMessageData?.Message ?? "" : text
         }`.trim();
         console.error("Africa's Talking send failed:", res.status, text);
