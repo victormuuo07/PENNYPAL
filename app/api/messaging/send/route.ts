@@ -5,6 +5,17 @@ import { createClient } from "@/lib/supabase/server";
 // AFRICASTALKING_API_KEY and AFRICASTALKING_USERNAME must be set as
 // server-side env vars in Vercel (NOT prefixed with NEXT_PUBLIC_, so they're
 // never sent to the browser). Get these from africastalking.com.
+// Africa's Talking wants full international format with a leading "+",
+// e.g. +254712345678. Users type 07..., 7..., 2547... or with spaces/dashes.
+function normalizeKenyanPhone(raw: string): string {
+  const cleaned = String(raw).replace(/[\s\-().]/g, "");
+  if (cleaned.startsWith("+")) return cleaned;
+  if (cleaned.startsWith("254")) return `+${cleaned}`;
+  if (cleaned.startsWith("0")) return `+254${cleaned.slice(1)}`;
+  if (/^[17]\d{8}$/.test(cleaned)) return `+254${cleaned}`;
+  return cleaned;
+}
+
 export async function POST(request: Request) {
   const supabase = createClient();
 
@@ -29,6 +40,12 @@ export async function POST(request: Request) {
   const apiKey = process.env.AFRICASTALKING_API_KEY;
   const username = process.env.AFRICASTALKING_USERNAME;
 
+  // The "sandbox" app username only works against the sandbox host; live
+  // usernames only work against the live host. Mixing them gives a 401.
+  const baseUrl =
+    username === "sandbox" ? "https://api.sandbox.africastalking.com" : "https://api.africastalking.com";
+  const to = normalizeKenyanPhone(phone_number);
+
   let delivered = false;
   let errorMessage: string | null = null;
 
@@ -36,18 +53,31 @@ export async function POST(request: Request) {
     errorMessage = "AFRICASTALKING_API_KEY / AFRICASTALKING_USERNAME not set in Vercel env vars yet";
   } else {
     try {
-      const res = await fetch("https://api.africastalking.com/version1/messaging", {
+      const res = await fetch(`${baseUrl}/version1/messaging`, {
         method: "POST",
         headers: {
           apiKey,
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
         },
-        body: new URLSearchParams({ username, to: phone_number, message }),
+        body: new URLSearchParams({ username, to, message }),
       });
-      const data = await res.json();
-      delivered = res.ok && data?.SMSMessageData?.Recipients?.[0]?.status === "Success";
-      if (!delivered) errorMessage = JSON.stringify(data);
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // AT returns plain text (e.g. "The supplied authentication is invalid") on auth failures
+      }
+      const recipient = data?.SMSMessageData?.Recipients?.[0];
+      // AT returns HTTP 201 on accept; status is "Success" (some accounts: "Sent")
+      delivered = res.ok && (recipient?.status === "Success" || recipient?.status === "Sent");
+      if (!delivered) {
+        errorMessage = `AT ${res.status} @ ${baseUrl} (to ${to}): ${recipient?.status ?? ""} ${
+          data ? data?.SMSMessageData?.Message ?? "" : text
+        }`.trim();
+        console.error("Africa's Talking send failed:", res.status, text);
+      }
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : "Unknown send error";
     }
@@ -61,6 +91,7 @@ export async function POST(request: Request) {
     message_content: message,
     sent_date: new Date().toISOString(),
     was_delivered: delivered,
+    error_message: delivered ? null : (errorMessage ?? "Send failed").slice(0, 500),
   });
 
   if (!delivered) {

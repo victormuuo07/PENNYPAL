@@ -78,7 +78,7 @@ export default function ContactsPanel({ contacts }: { contacts: Contact[] }) {
       });
       const data = await res.json();
       if (!res.ok) alert(data.error ?? "Failed to send");
-      else router.refresh();
+      router.refresh(); // refresh on failure too, so the new Failed row + reason shows up
     } finally {
       setSendingId(null);
     }
