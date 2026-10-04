@@ -45,6 +45,9 @@ export async function POST(request: Request) {
   const baseUrl =
     username === "sandbox" ? "https://api.sandbox.africastalking.com" : "https://api.africastalking.com";
   const to = normalizeKenyanPhone(phone_number);
+  // Optional: only set AFRICASTALKING_SENDER_ID once Africa's Talking has APPROVED the
+  // sender ID for your account. Sending an unapproved one fails with InvalidSenderId.
+  const senderId = process.env.AFRICASTALKING_SENDER_ID?.trim();
 
   let delivered = false;
   let errorMessage: string | null = null;
@@ -60,7 +63,7 @@ export async function POST(request: Request) {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
         },
-        body: new URLSearchParams({ username, to, message }),
+        body: new URLSearchParams({ username, to, message, ...(senderId ? { from: senderId } : {}) }),
       });
       const text = await res.text();
       let data: any = null;
