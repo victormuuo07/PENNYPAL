@@ -194,7 +194,7 @@ export default async function DashboardPage() {
           format="percent"
           previousValue={profitMarginLastMonth}
         />
-        <SummaryCard label="Total Sales Since Launch" value={totalSalesSinceLaunch} tone="positive" />
+        <SummaryCard label="Total Sales Since Launch (incl. VAT)" value={totalSalesSinceLaunch} tone="positive" />
       </div>
 
       {isOwner && (
