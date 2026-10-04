@@ -19,12 +19,6 @@ const CUSTOMER_TYPES = ["Consumer (B2C)", "Shop/Mama Mboga (B2B)", "Hotel/Restau
 const VAT_RATE = 0.16; // Kenya standard VAT — matches the INVOICES.vat field, so this lines up
 // with what eTIMS will eventually expect once real KRA credentials are wired in.
 
-let invoiceCounter = 0;
-function nextInvoiceNumber() {
-  invoiceCounter += 1;
-  return `INV-${Date.now().toString().slice(-6)}-${invoiceCounter}`;
-}
-
 export default function AddSaleForm({
   salesPersonId,
   salesPersonName,
@@ -76,7 +70,20 @@ export default function AddSaleForm({
     setError(null);
 
     const today = form.sale_date;
-    const invoiceNumber = nextInvoiceNumber();
+
+    // Issued by a Postgres sequence (see supabase/invoices_schema.sql) so
+    // two reps selling at the same moment can never end up with the same
+    // invoice number — a client-side counter can't guarantee that.
+    const { data: invoiceNumber, error: numberError } = await supabase.rpc("next_invoice_number");
+    if (numberError) {
+      setError(
+        numberError.message.includes("next_invoice_number")
+          ? "Invoice numbering isn't set up yet — run supabase/invoices_schema.sql in Supabase first."
+          : numberError.message
+      );
+      setSaving(false);
+      return;
+    }
 
     const { data: sale, error: saleError } = await supabase
       .from("SALES")
@@ -138,6 +145,7 @@ export default function AddSaleForm({
     // submitted anywhere yet, just structured correctly from day one.
     const { error: invoiceError } = await supabase.from("INVOICES").insert({
       invoice_number: invoiceNumber,
+      sale_id: sale?.id,
       customer_name: form.Name,
       customer_phone: form.Phone,
       invoice_date: today,
