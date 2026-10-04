@@ -4,6 +4,7 @@ type HistoryItem = {
   message_content: string;
   sent_date: string;
   was_delivered: boolean;
+  error_message?: string | null;
 };
 
 export default function MessageHistoryPanel({ history }: { history: HistoryItem[] }) {
@@ -21,6 +22,7 @@ export default function MessageHistoryPanel({ history }: { history: HistoryItem[
                 <th className="px-3 py-2 font-medium">Phone</th>
                 <th className="px-3 py-2 font-medium">Message</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Reason</th>
               </tr>
             </thead>
             <tbody>
@@ -37,6 +39,9 @@ export default function MessageHistoryPanel({ history }: { history: HistoryItem[
                     >
                       {h.was_delivered ? "Delivered" : "Failed"}
                     </span>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-ink-soft max-w-sm break-words">
+                    {h.was_delivered ? "" : h.error_message ?? "No reason recorded (sent before logging was added)"}
                   </td>
                 </tr>
               ))}
