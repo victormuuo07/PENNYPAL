@@ -123,6 +123,7 @@ export default function RawMaterialsPanel({ materials }: { materials: Material[]
         <input
           type="number"
           min={0.01}
+          step={0.01}
           placeholder="Cost per kg (KES)"
           value={form.cost_per_kg}
           onChange={(e) => update("cost_per_kg", Number(e.target.value))}
