@@ -2,6 +2,14 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
+  // The calendar feed is fetched by Google/Apple/Outlook servers, which have no
+  // login cookie. It is protected by its own unguessable token (see the route),
+  // so it must skip the login redirect below or calendar apps just receive the
+  // login page instead of the .ics file and show no tasks.
+  if (request.nextUrl.pathname.startsWith("/api/calendar/")) {
+    return NextResponse.next();
+  }
+
   let response = NextResponse.next({ request: { headers: request.headers } });
 
   const supabase = createServerClient(
